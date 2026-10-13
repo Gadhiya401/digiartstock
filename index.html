@@ -335,6 +335,20 @@ async function getStockView(){
   const hidden = new Set((off||[]).map(p=>p.id));
   return (data||[]).filter(r=>!hidden.has(r.product_id));
 }
+// filter by number/name; exact number first, then number starts-with, then contains, then name match
+function searchProducts(rows,q){
+  if(!q) return rows;
+  const rank = r => {
+    const no=r.product_no.toLowerCase(), noNum=no.replace(/^0+(?=.)/,""), qNum=q.replace(/^0+(?=.)/,"");
+    if(no===q || noNum===qNum) return 0;
+    if(no.startsWith(q) || noNum.startsWith(qNum)) return 1;
+    if(no.includes(q)) return 2;
+    return r.name.toLowerCase().includes(q) ? 3 : -1;
+  };
+  return rows.map(r=>[rank(r),r]).filter(([k])=>k>=0)
+    .sort((a,b)=>a[0]-b[0] || a[1].product_no.localeCompare(b[1].product_no,undefined,{numeric:true}))
+    .map(([,r])=>r);
+}
 function branchCode(id){ return state.branches.find(b=>b.id===id)?.code || ""; }
 function branchIdByCode(code){ return state.branches.find(b=>b.code===code)?.id || null; }
 
@@ -405,7 +419,7 @@ async function loadProducts(){
 }
 function renderProdRows(){
   const q=$("#prodSearch").value.trim().toLowerCase();
-  const list = productCache.filter(p=>!q || p.product_no.toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
+  const list = searchProducts(productCache,q);
   $("#prodRows").innerHTML = list.map(p=>`
     <tr class="${p.low_stock?'low':''}">
       <td>${esc(p.product_no)}</td><td>${esc(p.name)}</td>
@@ -485,7 +499,7 @@ function productPicker(prefix){
     const q=input().value.trim().toLowerCase();
     if(!q){ listEl().classList.add("hide"); return; }
     await ensure();
-    const m=rows.filter(r=>r.product_no.toLowerCase().includes(q)||r.name.toLowerCase().includes(q)).slice(0,20);
+    const m=searchProducts(rows,q).slice(0,20);
     listEl().innerHTML = m.map(r=>`<div data-id="${r.product_id}"><b>${esc(r.product_no)}</b> — ${esc(r.name)}<br><span class="muted">Stock: ${fmt(r.current_stock)} ${esc(r.unit||'')}</span></div>`).join("") || `<div class="muted">No match</div>`;
     listEl().classList.remove("hide");
   });
@@ -594,7 +608,7 @@ async function runCheck(){
     out.innerHTML='<div class="loading"><span class="spin"></span> Loading…</div>';
     checkRows=await getStockView();
   }
-  const m=checkRows.filter(r=>r.product_no.toLowerCase().includes(q)||r.name.toLowerCase().includes(q)).slice(0,8);
+  const m=searchProducts(checkRows,q).slice(0,8);
   if(!m.length){ out.innerHTML='<div class="muted">No product found</div>'; return; }
   out.innerHTML=m.map(r=>`
     <div class="card" style="margin-bottom:.6rem;">
