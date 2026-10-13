@@ -256,7 +256,9 @@ const $  = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
 const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt = n => (Math.round((Number(n)||0)*100)/100).toLocaleString();
-const todayISO = () => new Date().toISOString().slice(0,10);
+// local-date YYYY-MM-DD (toISOString() is UTC and shifts the day back in IST)
+const isoLocal = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const todayISO = () => isoLocal(new Date());
 
 function toast(msg,kind="info",ms=3000){
   const el=document.createElement("div");
@@ -317,6 +319,7 @@ function go(page){
   if(page==="dash") loadDash();
   if(page==="products") loadProducts();
   if(page==="in"||page==="out") refreshMoveForms();
+  if(page==="report") $("#rRun").click();
   if(page==="check"){ $("#checkInput").value=""; $("#checkResult").innerHTML=""; $("#checkInput").focus(); }
 }
 $("#tabs").onclick = e => { const b=e.target.closest("button"); if(b) go(b.dataset.go); };
@@ -586,12 +589,16 @@ $("#dateChips").onclick = e=>{
   const b=e.target.closest("button"); if(!b) return;
   rRange=b.dataset.r;
   $$("#dateChips button").forEach(x=>x.classList.toggle("on",x===b));
+  if(rRange==="custom" && !$("#rFrom").value && !$("#rTo").value){
+    $("#rFrom").value=$("#rTo").value=todayISO();
+  }
   $("#customRange").style.display = rRange==="custom" ? "grid" : "none";
+  if(rRange!=="custom") $("#rRun").click();
 };
 $("#customRange").style.display="none";
 function rangeDates(){
   const d=new Date(); d.setHours(0,0,0,0);
-  const iso=x=>x.toISOString().slice(0,10);
+  const iso=isoLocal;
   const s=new Date(d);
   if(rRange==="today") return [iso(d),iso(d)];
   if(rRange==="yday"){ s.setDate(s.getDate()-1); return [iso(s),iso(s)]; }
@@ -607,6 +614,7 @@ function rangeDates(){
 let lastReport=null;
 $("#rRun").onclick = async ()=>{
   const [from,to]=rangeDates();
+  if(from>to){ toast("From date is after To date","bad"); return; }
   const type=$("#rType").value, branchSel=$("#rBranch").value, prodQ=$("#rProd").value.trim().toLowerCase();
   const body=$("#reportBody");
   body.innerHTML='<div class="loading"><span class="spin"></span> Running…</div>';
