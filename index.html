@@ -326,9 +326,14 @@ $("#tabs").onclick = e => { const b=e.target.closest("button"); if(b) go(b.datas
 
 /* ---------------- Data helpers ---------------- */
 async function getStockView(){
-  const { data, error } = await sb.from("v_product_stock").select("*").order("product_no");
+  const [{ data, error }, { data:off }] = await Promise.all([
+    sb.from("v_product_stock").select("*").order("product_no"),
+    sb.from("products").select("id").eq("is_active",false)
+  ]);
   if(error){ toast(error.message,"bad"); return []; }
-  return data||[];
+  // removed products are hidden (is_active=false) but their history stays
+  const hidden = new Set((off||[]).map(p=>p.id));
+  return (data||[]).filter(r=>!hidden.has(r.product_id));
 }
 function branchCode(id){ return state.branches.find(b=>b.id===id)?.code || ""; }
 function branchIdByCode(code){ return state.branches.find(b=>b.code===code)?.id || null; }
@@ -405,11 +410,23 @@ function renderProdRows(){
     <tr class="${p.low_stock?'low':''}">
       <td>${esc(p.product_no)}</td><td>${esc(p.name)}</td>
       <td>${fmt(p.current_stock)} ${esc(p.unit||'')}</td><td>${fmt(p.min_stock)}</td>
-      <td><button class="btn sec sm" data-edit="${p.product_id}">Edit</button></td>
+      <td style="white-space:nowrap;"><button class="btn sec sm" data-edit="${p.product_id}">Edit</button>
+        <button class="btn sec sm" data-del="${p.product_id}" style="color:var(--danger);border-color:var(--danger);">Remove</button></td>
     </tr>`).join("") || `<tr><td colspan="5" class="muted">No products</td></tr>`;
 }
 $("#prodSearch").oninput = renderProdRows;
 $("#prodRows").onclick = async e => {
+  const delId=e.target.dataset.del;
+  if(delId){
+    const p=productCache.find(x=>x.product_id===delId);
+    if(!p || !confirm(`Remove product ${p.product_no} — ${p.name}?\n\nIt will be hidden from the app. Old IN/OUT history stays in reports.`)) return;
+    const { error } = await sb.from("products").update({ is_active:false }).eq("id",delId);
+    if(error){ toast(error.message,"bad"); return; }
+    toast("Product removed","ok");
+    if($("#pId").value===delId) resetProdForm();
+    loadProducts();
+    return;
+  }
   const id=e.target.dataset.edit; if(!id) return;
   const { data } = await sb.from("products").select("*").eq("id",id).single();
   if(!data) return;
@@ -435,7 +452,12 @@ $("#pSave").onclick = async ()=>{
   };
   if(!rec.product_no||!rec.name){ $("#pErr").textContent="Product No and Name are required"; return; }
   $("#pSave").disabled=true;
-  const id=$("#pId").value;
+  let id=$("#pId").value;
+  if(!id){
+    // same number as a removed product -> bring it back instead of a duplicate error
+    const { data:old } = await sb.from("products").select("id").eq("product_no",rec.product_no).eq("is_active",false).maybeSingle();
+    if(old){ id=old.id; rec.is_active=true; }
+  }
   const q = id ? sb.from("products").update(rec).eq("id",id) : sb.from("products").insert(rec);
   const { error } = await q;
   $("#pSave").disabled=false;
