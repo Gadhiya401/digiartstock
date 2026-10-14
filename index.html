@@ -292,6 +292,33 @@
         <button class="btn sec hide" id="poCancelEdit" style="margin-top:.4rem;">Cancel edit</button>
         <div class="err" id="poErr"></div>
       </div>
+      <div id="poReport" class="hide">
+        <div class="card">
+          <label>Date range</label>
+          <div class="chips" id="poRChips">
+            <button data-r="today">Today</button>
+            <button data-r="yday">Yesterday</button>
+            <button data-r="week">This Week</button>
+            <button data-r="month" class="on">This Month</button>
+            <button data-r="lastmonth">Last Month</button>
+            <button data-r="custom">Custom</button>
+          </div>
+          <div class="grid2 hide" id="poRCustom" style="margin-top:.5rem;">
+            <div><label>From</label><input id="poRFrom" type="date" /></div>
+            <div><label>To</label><input id="poRTo" type="date" /></div>
+          </div>
+          <div class="grid2" style="margin-top:.3rem;">
+            <div><label>Date by</label><select id="poRBy">
+              <option value="created_at">Entry date</option>
+              <option value="printed_at">Print done date</option>
+              <option value="dispatched_at">Dispatch date</option></select></div>
+            <div id="poRBranchWrap"><label>Branch</label><select id="poRBranch"><option value="all">All</option></select></div>
+          </div>
+          <div style="height:.7rem;"></div>
+          <button class="btn" id="poRRun">Run report</button>
+        </div>
+        <div id="poRBody"></div>
+      </div>
       <div id="poListWrap" class="hide">
         <div class="card" style="padding:.7rem;display:flex;gap:.5rem;">
           <input id="poSearch" placeholder="Search mobile (last digits ok) or details…" autocomplete="off" />
@@ -716,21 +743,23 @@ $("#dateChips").onclick = e=>{
   if(rRange!=="custom") $("#rRun").click();
 };
 $("#customRange").style.display="none";
-function rangeDates(){
+// [from,to] as local YYYY-MM-DD for a date chip (today/yday/week/month/lastmonth/custom)
+function rangeOf(key,fromEl,toEl){
   const d=new Date(); d.setHours(0,0,0,0);
   const iso=isoLocal;
   const s=new Date(d);
-  if(rRange==="today") return [iso(d),iso(d)];
-  if(rRange==="yday"){ s.setDate(s.getDate()-1); return [iso(s),iso(s)]; }
-  if(rRange==="week"){ s.setDate(s.getDate()-((s.getDay()+6)%7)); return [iso(s),iso(d)]; }
-  if(rRange==="month"){ s.setDate(1); return [iso(s),iso(d)]; }
-  if(rRange==="lastmonth"){
+  if(key==="today") return [iso(d),iso(d)];
+  if(key==="yday"){ s.setDate(s.getDate()-1); return [iso(s),iso(s)]; }
+  if(key==="week"){ s.setDate(s.getDate()-((s.getDay()+6)%7)); return [iso(s),iso(d)]; }
+  if(key==="month"){ s.setDate(1); return [iso(s),iso(d)]; }
+  if(key==="lastmonth"){
     const a=new Date(d.getFullYear(),d.getMonth()-1,1);
     const b=new Date(d.getFullYear(),d.getMonth(),0);
     return [iso(a),iso(b)];
   }
-  return [$("#rFrom").value||iso(d), $("#rTo").value||iso(d)];
+  return [fromEl.value||iso(d), toEl.value||iso(d)];
 }
+const rangeDates = () => rangeOf(rRange,$("#rFrom"),$("#rTo"));
 let lastReport=null;
 $("#rRun").onclick = async ()=>{
   const [from,to]=rangeDates();
@@ -918,7 +947,7 @@ function renderOrders(){
 
   const tabs=[...(role()==="branch"?[["new","+ New Entry",0]]:[]),
     ["pending","Pending",pend.length],["courier","Courier Pending",cp.length],
-    ["dispatched","Dispatched",0],["cancelled","Cancelled",0],["all","All / Search",0]];
+    ["dispatched","Dispatched",0],["cancelled","Cancelled",0],["all","All / Search",0],["report","📊 Report",0]];
   // same options as chips (phone) and as a sub-menu under Orders in the sidebar (PC)
   const tabHtml=tabs.map(([k,l,n])=>
     `<button data-tab="${k}" class="${po.tab===k?"on":""}">${l}${n?`<span class="badge">${n}</span>`:""}</button>`).join("");
@@ -926,7 +955,9 @@ function renderOrders(){
   $("#poSubnav").innerHTML=tabHtml;
 
   $("#poNew").classList.toggle("hide",po.tab!=="new");
-  $("#poListWrap").classList.toggle("hide",po.tab==="new");
+  $("#poListWrap").classList.toggle("hide",po.tab==="new"||po.tab==="report");
+  $("#poReport").classList.toggle("hide",po.tab!=="report");
+  if(po.tab==="report"){ if(!po.reportRan) runOrderReport(); return; }
   $("#poStatus").classList.toggle("hide",po.tab!=="all");
   if(po.tab==="new"){
     $("#poBranchBox").innerHTML = state.branch ? `Branch (from your login): <b>${esc(state.branch.name)}</b>`
@@ -939,11 +970,24 @@ function renderOrders(){
   renderOrderList();
 }
 
-function poMatch(o,q){
-  if(!q) return true;
-  const digits=q.replace(/\D/g,"");
-  return (digits.length>0 && o.mobile.includes(digits)) || o.details.toLowerCase().includes(q);
+// search rank, lower = closer match; -1 = no match
+// mobile: exact > ends with (last digits) > starts with > anywhere; then details text
+function poRank(o,q){
+  const digits=q.replace(/\D/g,""), det=o.details.toLowerCase();
+  if(digits && /^[\d\s+()-]+$/.test(q)){
+    const d=digits.length>10 && digits.startsWith("91") ? digits.slice(-10) : digits;
+    if(o.mobile===d) return 0;
+    if(o.mobile.endsWith(d)) return 1;
+    if(o.mobile.startsWith(d)) return 2;
+    if(o.mobile.includes(d)) return 3;
+  }
+  if(det.startsWith(q)) return 4;
+  if((" "+det).replace(/[^a-z0-9઀-૿]+/g," ").includes(" "+q)) return 5;   // starts a word
+  return det.includes(q) ? 6 : -1;
 }
+const poMatch = (o,q) => !q || poRank(o,q)>=0;
+// while searching, closest matches first; otherwise (and for ties) the list's normal order
+const rankSort = (arr,q,cmp) => arr.sort((a,b)=> (q ? poRank(a,q)-poRank(b,q) : 0) || cmp(a,b));
 function renderOrderList(){
   // keep what packing has typed (and focus) across re-renders from realtime / timer
   const keep={};
@@ -965,14 +1009,14 @@ function renderOrderList(){
         <button class="btn" id="poSaveAll">Save all filled</button></div>` : "";
     html=`${quick}${cards(l)||`<div class="card muted">No parcels waiting</div>`}`;
   } else if(po.tab==="dispatched"){
-    const l=list.filter(o=>o.status==="dispatched").sort(by("dispatched_at",-1));
+    const l=rankSort(list.filter(o=>o.status==="dispatched"),q,by("dispatched_at",-1));
     html=cards(l)||`<div class="card muted">Nothing dispatched yet</div>`;
   } else if(po.tab==="cancelled"){
-    const l=list.filter(o=>o.status==="cancelled").sort(by("updated_at",-1));
+    const l=rankSort(list.filter(o=>o.status==="cancelled"),q,by("updated_at",-1));
     html=cards(l)||`<div class="card muted">No cancelled orders</div>`;
   } else {
     const st=$("#poStatus").value;
-    const l=list.filter(o=>st==="all"||o.status===st).sort(by("created_at",-1));
+    const l=rankSort(list.filter(o=>st==="all"||o.status===st),q,by("created_at",-1));
     html=cards(l)||`<div class="card muted">No orders${q?" for this search":""}</div>`;
   }
   $("#poList").innerHTML=html;
@@ -1004,7 +1048,7 @@ function poCard(o){
       body=`<div class="courier">
         <select data-f="partner">
           ${Object.entries(PO_PARTNERS).map(([k,v])=>`<option value="${k}" ${(o.courier_partner||"anjani")===k?"selected":""}>${v}</option>`).join("")}</select>
-        <input data-f="tracking" placeholder="Tracking ID" autocomplete="off" value="${esc(o.tracking_id||"")}" />
+        <input data-f="tracking" placeholder="Tracking ID (Anjani: 10 digits)" autocomplete="off" value="${esc(o.tracking_id||"")}" />
         <input data-f="other" class="hide" placeholder="Partner name" style="grid-column:1/-1" value="${esc(o.courier_other||"")}" />
       </div><div class="err" data-err></div>`;
       acts.push(`<button class="btn" data-act="dispatch">🚚 Save / Dispatch</button>`);
@@ -1012,9 +1056,10 @@ function poCard(o){
     if(r==="printing") acts.push(`<button class="btn sec sm" data-act="unprint">↩ Undo Print Done</button>`);
   }
   if(o.status==="dispatched"){
-    body=`<div class="trk">🚚 <b>${esc(partnerName(o))}</b> · Tracking ID: <b>${esc(o.tracking_id)}</b></div>`;
-    const msg=`Namaste! Your order from ${branchName(o.branch_id)} has been dispatched.\nCourier: ${partnerName(o)}\nTracking ID: ${o.tracking_id}`;
-    acts.push(`<a class="btn sec sm" style="text-decoration:none;" target="_blank" rel="noopener" href="https://wa.me/91${o.mobile}?text=${encodeURIComponent(msg)}">WhatsApp</a>`);
+    body=`<div class="trk">🚚 <b>${esc(partnerName(o))}</b> · Tracking ID: <b>${esc(o.tracking_id)}</b>
+      ${trackUrl(o)?` · <a href="${esc(trackUrl(o))}" target="_blank" rel="noopener">Track ↗</a>`:""}</div>`;
+    acts.push(`<button class="btn sm" data-act="copy">📋 Copy details</button>`);
+    acts.push(`<a class="btn sec sm" style="text-decoration:none;" target="_blank" rel="noopener" href="https://wa.me/91${o.mobile}?text=${encodeURIComponent(courierText(o))}">WhatsApp</a>`);
     if(canPack()) acts.push(`<button class="btn sec sm" data-act="undispatch">↩ Undo Dispatch</button>`);
   }
   if(o.status==="cancelled"){
@@ -1040,6 +1085,31 @@ function poCard(o){
   </div>`;
 }
 
+const trackUrl = o => o.courier_partner==="anjani" ? `https://shreeanjani.co.in/tracking?awb=${encodeURIComponent(o.tracking_id)}` : "";
+// ready-to-send dispatch message (Copy button + WhatsApp)
+function courierText(o){
+  return [
+    `Namaste! Your order from ${branchName(o.branch_id)} has been dispatched 🚚`,
+    ``,
+    `Order: ${o.details}`,
+    `Mobile: ${fmtMobile(o.mobile)}`,
+    `Courier: ${partnerName(o)}`,
+    `Tracking ID: ${o.tracking_id}`,
+    `Dispatched: ${dtIST(o.dispatched_at)}`,
+    ...(trackUrl(o) ? [`Track here: ${trackUrl(o)}`] : [])
+  ].join("\n");
+}
+async function copyText(t){
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch {
+    // fallback for browsers without clipboard API permission
+    const ta=document.createElement("textarea"); ta.value=t; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select();
+    let ok=false; try { ok=document.execCommand("copy"); } catch {}
+    ta.remove(); return ok;
+  }
+}
+
 async function poUpdate(id,patch,render=true){
   const { data, error } = await sb.from("print_orders").update(patch).eq("id",id).select().single();
   if(error){ toast(error.message,"bad",5000); return false; }
@@ -1054,11 +1124,13 @@ function togglePartnerOther(card){
 // read + validate one courier card; returns patch or null (and shows the error on the card)
 function courierPatch(card){
   const v=f=>$(`[data-f="${f}"]`,card).value.trim();
-  const partner=v("partner"), tracking=v("tracking"), other=v("other");
+  const partner=v("partner"), other=v("other");
+  const tracking = partner==="anjani" ? v("tracking").replace(/\s/g,"") : v("tracking");   // pasted "12345 67890"
   const err=$("[data-err]",card); err.textContent="";
   let msg="";
   if(!tracking) msg="Enter the tracking ID";
   else if(!partner) msg="Pick the courier partner";
+  else if(partner==="anjani" && !/^\d{10}$/.test(tracking)) msg=`Anjani tracking ID must be exactly 10 digits (you entered ${tracking.length})`;
   else if(partner==="other" && !other) msg="Type the partner name";
   if(msg){ err.textContent=msg; return null; }
   return { status:"dispatched", courier_partner:partner, courier_other:partner==="other"?other:null, tracking_id:tracking };
@@ -1114,6 +1186,10 @@ $("#poList").addEventListener("click", async e=>{
     b.disabled=true; if(await poUpdate(id,patch)) toast("Dispatched 🚚","ok"); else b.disabled=false;
   }
   if(act==="undispatch" && confirm("Move this order back to Courier Pending?")) poUpdate(id,{status:"courier_pending"});
+  if(act==="copy"){
+    if(await copyText(courierText(o))){ b.textContent="✓ Copied"; setTimeout(()=>{ b.textContent="📋 Copy details"; },1500); }
+    else toast("Could not copy — please copy manually","bad");
+  }
   if(act==="cancel"){
     const reason=prompt(`Cancel order for ${fmtMobile(o.mobile)}?\nReason:`);
     if(reason?.trim()) poUpdate(id,{status:"cancelled",cancel_reason:reason.trim()});
@@ -1163,6 +1239,93 @@ $("#poSave").onclick = async ()=>{
   renderOrders();
   if(!wasEdit) $("#poMobile").focus();
 };
+
+/* ---------------- Print Orders report ---------------- */
+let poRRange="month";
+$("#poRChips").onclick = e=>{
+  const b=e.target.closest("button"); if(!b) return;
+  poRRange=b.dataset.r;
+  $$("#poRChips button").forEach(x=>x.classList.toggle("on",x===b));
+  if(poRRange==="custom" && !$("#poRFrom").value && !$("#poRTo").value) $("#poRFrom").value=$("#poRTo").value=todayISO();
+  $("#poRCustom").classList.toggle("hide",poRRange!=="custom");
+  if(poRRange!=="custom") runOrderReport();
+};
+$("#poRRun").onclick = ()=>runOrderReport();
+$("#poRBy").onchange = $("#poRBranch").onchange = ()=>runOrderReport();
+const hrs = ms => { const h=ms/36e5; return h<1 ? Math.round(h*60)+" min" : h<48 ? (Math.round(h*10)/10)+" h" : (Math.round(h/2.4)/10)+" days"; };
+
+async function runOrderReport(){
+  po.reportRan=true;
+  const body=$("#poRBody");
+  // branch filter only for printing/packing; branch logins only ever see their own branch
+  const bsel=$("#poRBranch");
+  if(bsel.options.length===1) state.branches.forEach(b=>bsel.add(new Option(b.name,b.id)));
+  $("#poRBranchWrap").classList.toggle("hide",role()==="branch");
+
+  const [from,to]=rangeOf(poRRange,$("#poRFrom"),$("#poRTo"));
+  if(from>to){ toast("From date is after To date","bad"); return; }
+  const col=$("#poRBy").value;
+  body.innerHTML='<div class="loading"><span class="spin"></span> Running…</div>';
+  let q=sb.from("print_orders").select("*")
+    .gte(col,`${from}T00:00:00+05:30`).lte(col,`${to}T23:59:59.999+05:30`)   // IST day boundaries
+    .order(col,{ascending:false}).limit(5000);
+  if(bsel.value!=="all" && role()!=="branch") q=q.eq("branch_id",bsel.value);
+  const { data, error } = await q;
+  if(error){ body.innerHTML=`<div class="card err">${esc(error.message)}</div>`; return; }
+  const rows=data||[];
+  const cnt=(arr,st)=>arr.filter(o=>o.status===st).length;
+  const printed=arr=>arr.filter(o=>o.printed_at).length;
+  const avg=(arr,a,b)=>{ const v=arr.filter(o=>o[a]&&o[b]).map(o=>new Date(o[b])-new Date(o[a])); return v.length?hrs(v.reduce((x,y)=>x+y,0)/v.length):"—"; };
+  const late=rows.filter(o=>lateP(o)||lateC(o)).length;
+  const byBranch=state.branches.map(b=>[b.name,rows.filter(o=>o.branch_id===b.id)]).filter(([,r])=>r.length);
+  const disp=rows.filter(o=>o.status==="dispatched");
+  const byCourier=Object.entries(disp.reduce((m,o)=>{ const k=partnerName(o)||"—"; m[k]=(m[k]||0)+1; return m; },{})).sort((a,b)=>b[1]-a[1]);
+  const byLabel={created_at:"Entry date",printed_at:"Print done date",dispatched_at:"Dispatch date"}[col];
+
+  body.innerHTML=`
+    <div class="grid3">
+      <div class="stat"><div class="n">${rows.length}</div><div class="l">Total orders</div></div>
+      <div class="stat"><div class="n">${printed(rows)}</div><div class="l">Printed</div></div>
+      <div class="stat"><div class="n" style="color:var(--ok)">${disp.length}</div><div class="l">Dispatched</div></div>
+      <div class="stat"><div class="n" style="color:var(--danger)">${cnt(rows,"pending")}</div><div class="l">Print pending${late?` · ${late} late`:""}</div></div>
+      <div class="stat"><div class="n" style="color:#c2410c">${cnt(rows,"courier_pending")}</div><div class="l">Tracking pending</div></div>
+      <div class="stat"><div class="n" style="color:var(--muted)">${cnt(rows,"cancelled")}</div><div class="l">Cancelled</div></div>
+    </div>
+    <div class="dash-panels">
+      <div class="panel">
+        <h3>Branch-wise</h3>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Branch</th><th>Orders</th><th>Printed</th><th>Dispatched</th><th>Pending</th><th>Cancelled</th></tr></thead>
+          <tbody>${byBranch.map(([n,r])=>`<tr><td>${esc(n)}</td><td>${r.length}</td><td>${printed(r)}</td><td>${cnt(r,"dispatched")}</td>
+            <td>${cnt(r,"pending")+cnt(r,"courier_pending")}</td><td>${cnt(r,"cancelled")}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No data</td></tr>`}</tbody>
+        </table></div>
+      </div>
+      <div class="panel">
+        <h3>Courier-wise &amp; speed</h3>
+        ${byCourier.map(([k,n])=>`<div class="mini"><span>🚚 ${esc(k)}</span><b>${n}</b></div>`).join("") || `<div class="mini muted">No dispatches</div>`}
+        <div class="mini"><span>Avg entry → print done</span><b>${avg(rows,"created_at","printed_at")}</b></div>
+        <div class="mini"><span>Avg print done → dispatch</span><b>${avg(rows,"printed_at","dispatched_at")}</b></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;">
+        <h3 style="font-size:1rem;">Orders (${rows.length}) · ${esc(byLabel)} ${esc(ddmmyyyy(from))} → ${esc(ddmmyyyy(to))}</h3>
+        <button class="btn sec sm" id="poRCsv">CSV</button>
+      </div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Entry</th><th>Branch</th><th>Mobile</th><th>Details</th><th>Status</th><th>Print done</th><th>Dispatched</th><th>Courier</th><th>Tracking ID</th></tr></thead>
+        <tbody>${rows.map(o=>`<tr class="${lateP(o)||lateC(o)?"low":""}"><td>${dtIST(o.created_at)}</td><td>${esc(branchName(o.branch_id))}</td>
+          <td>${esc(fmtMobile(o.mobile))}</td><td style="white-space:normal;min-width:180px;">${esc(o.details)}</td><td>${PO_STATUS[o.status]}</td>
+          <td>${o.printed_at?dtIST(o.printed_at):"—"}</td><td>${o.dispatched_at?dtIST(o.dispatched_at):"—"}</td>
+          <td>${esc(partnerName(o))}</td><td>${esc(o.tracking_id||"")}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">No orders in this range</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
+  $("#poRCsv").onclick = ()=>downloadCSV(`print_orders_${from}_${to}.csv`,
+    [["Entry","Branch","Mobile","Details","Status","Print done","Print by","Dispatched","Dispatch by","Courier","Tracking ID","Cancel reason"],
+     ...rows.map(o=>[dtIST(o.created_at),branchName(o.branch_id),o.mobile,o.details,PO_STATUS[o.status],
+       o.printed_at?dtIST(o.printed_at):"",po.names[o.printed_by]||"",o.dispatched_at?dtIST(o.dispatched_at):"",po.names[o.dispatched_by]||"",
+       partnerName(o),o.tracking_id||"",o.cancel_reason||""])]);
+}
 
 /* ---------------- Start ---------------- */
 if(SUPABASE_URL.includes("YOUR-PROJECT")){
