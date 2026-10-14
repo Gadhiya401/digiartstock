@@ -103,6 +103,43 @@
   @keyframes sp { to { transform:rotate(360deg); } }
   .loading { text-align:center; color:var(--muted); padding:1.5rem; }
   .hide { display:none !important; }
+
+  /* print orders */
+  textarea { font:inherit; width:100%; padding:.6rem .7rem; border:1px solid var(--line); border-radius:10px;
+    background:#fff; color:var(--text); resize:vertical; }
+  textarea:focus { outline:2px solid var(--primary); outline-offset:0; border-color:var(--primary); }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:.6rem; }
+  .stat.tap { cursor:pointer; }
+  .stat.tap:active { background:#f1f3f7; }
+  .badge { display:inline-block; min-width:1.2rem; text-align:center; background:var(--danger); color:#fff;
+    border-radius:999px; font-size:.65rem; font-weight:700; padding:0 .3rem; margin-left:.25rem; line-height:1.2rem; }
+  .chips button.on .badge { background:#fff; color:var(--primary); }
+  .po { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--line);
+    border-radius:var(--radius); padding:.8rem .9rem; margin-bottom:.6rem; }
+  .po.red { background:#fef2f2; border-color:#fecaca; border-left-color:var(--danger); }
+  .po.orange { background:#fff7ed; border-color:#fed7aa; border-left-color:#ea580c; }
+  .po .top { display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; }
+  .po .mob { font-size:1.15rem; font-weight:800; color:var(--text); text-decoration:none; margin-right:auto; }
+  .po .det { white-space:pre-wrap; margin:.35rem 0; }
+  .po .meta { font-size:.78rem; color:var(--muted); }
+  .po .alert { font-weight:800; color:var(--danger); font-size:.82rem; margin-top:.2rem; }
+  .po .alert.or { color:#c2410c; }
+  .po .acts { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.6rem; }
+  .po .courier { display:grid; grid-template-columns:1fr 1fr; gap:.4rem; margin-top:.6rem; }
+  .po .trk { background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:.45rem .6rem; margin-top:.4rem; font-size:.88rem; }
+  .pill.br-d { background:#dbeafe; color:#1e40af; } .pill.br-u { background:#f3e8ff; color:#6b21a8; }
+  .pill.s-pending { background:#fee2e2; color:#991b1b; } .pill.s-courier_pending { background:#ffedd5; color:#9a3412; }
+  .pill.s-dispatched { background:#dcfce7; color:#166534; } .pill.s-cancelled { background:#e5e7eb; color:#374151; }
+  .pill.urgent { background:var(--danger); color:#fff; }
+  .po-h { font-size:.95rem; margin:1rem 0 .5rem; }
+  /* Orders sub-menu: sidebar on PC, chips on phone */
+  nav.tabs .subnav { display:none; }
+  @media (min-width:900px){
+    nav.tabs .subnav { display:flex; flex-direction:column; gap:.1rem; margin:0 0 .3rem 1.4rem; padding-left:.5rem; border-left:2px solid var(--line); }
+    nav.tabs .subnav button { padding:.45rem .7rem; font-size:.85rem; }
+    nav.tabs .subnav button .badge { margin-left:auto; }
+    #poTabs { display:none; }
+  }
 </style>
 </head>
 <body>
@@ -235,6 +272,38 @@
         <div id="checkResult" style="margin-top:.8rem;"></div>
       </div>
     </section>
+
+    <!-- PRINT ORDERS -->
+    <section data-page="orders" class="hide">
+      <h2>Print Orders</h2>
+      <div class="grid3" id="poStats"></div>
+      <div class="chips" id="poTabs" style="margin:.8rem 0;"></div>
+      <div class="card hide" id="poNew">
+        <h3 id="poFormTitle" style="font-size:1rem;">New print entry</h3>
+        <div class="selbox" id="poBranchBox"></div>
+        <div class="grid2" style="margin-top:.3rem;">
+          <div><label>Mobile number *</label><input id="poMobile" type="tel" inputmode="numeric" maxlength="14" placeholder="10 digits" autocomplete="off" /></div>
+          <div><label>Date &amp; time (auto)</label><input id="poNow" readonly tabindex="-1" style="background:#f6f7f9;color:var(--muted);" /></div>
+        </div>
+        <label>What to print / details *</label>
+        <textarea id="poDetails" rows="3" placeholder="e.g. Wedding card design 112, 200 pcs, gold foil"></textarea>
+        <div style="height:.7rem;"></div>
+        <button class="btn" id="poSave">Save entry</button>
+        <button class="btn sec hide" id="poCancelEdit" style="margin-top:.4rem;">Cancel edit</button>
+        <div class="err" id="poErr"></div>
+      </div>
+      <div id="poListWrap" class="hide">
+        <div class="card" style="padding:.7rem;display:flex;gap:.5rem;">
+          <input id="poSearch" placeholder="Search mobile (last digits ok) or details…" autocomplete="off" />
+          <select id="poStatus" style="width:auto;">
+            <option value="all">All</option><option value="pending">Pending</option>
+            <option value="courier_pending">Courier Pending</option><option value="dispatched">Dispatched</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+        <div id="poList"></div>
+      </div>
+    </section>
   </div>
 
   <nav class="tabs" id="tabs">
@@ -245,6 +314,8 @@
     <button data-go="out"><span class="i">▲</span>OUT</button>
     <button data-go="report"><span class="i">≣</span>Hisab</button>
     <button data-go="check"><span class="i">⌕</span>Check</button>
+    <button data-go="orders"><span class="i">🖨</span><span>Orders<span class="badge hide" id="poNavBadge"></span></span></button>
+    <div class="subnav hide" id="poSubnav"></div>
   </nav>
 </div>
 
@@ -268,6 +339,10 @@ function toast(msg,kind="info",ms=3000){
 }
 
 const state = { user:null, profile:null, branch:null, branches:[], page:"dash" };
+// branch | printing | packing  (profiles.role, see print_orders.sql)
+const role = () => state.profile?.role || "branch";
+const whoLabel = () => state.branch ? state.branch.name
+  : ({printing:"Printing", packing:"Packing"}[role()] || "No branch");
 
 /* ---------------- Auth ---------------- */
 async function boot(){
@@ -284,13 +359,16 @@ async function loadIdentity(user){
   state.branches = branches||[];
   state.profile = profile||null;
   state.branch = state.branches.find(b=>b.id===profile?.branch_id) || null;
-  if(!state.branch){
+  if(!state.branch && role()==="branch"){
     toast("Your login is not linked to a branch. See SETUP.md","bad",6000);
   }
-  $("#branchChip").textContent = state.branch ? state.branch.name : "No branch";
+  $("#branchChip").textContent = whoLabel();
+  // printing / packing logins have no branch, so no stock IN/OUT for them
+  $$('#tabs [data-go="in"],#tabs [data-go="out"]').forEach(b=>b.classList.toggle("hide",role()!=="branch"));
   show("app");
   buildInForm(); buildOutForm();
-  go("dash");
+  initOrders();
+  go(role()==="branch" ? "dash" : "orders");
 }
 $("#liBtn").onclick = async ()=>{
   const email=$("#liEmail").value.trim(), password=$("#liPass").value;
@@ -314,15 +392,21 @@ function show(which){
 /* ---------------- Navigation ---------------- */
 function go(page){
   state.page=page;
-  $$("#tabs button").forEach(b=>b.classList.toggle("on", b.dataset.go===page));
+  $$("#tabs > button").forEach(b=>b.classList.toggle("on", b.dataset.go===page));
+  $("#poSubnav").classList.toggle("hide", page!=="orders");
   $$("section[data-page]").forEach(s=>s.classList.toggle("hide", s.dataset.page!==page));
   if(page==="dash") loadDash();
   if(page==="products") loadProducts();
   if(page==="in"||page==="out") refreshMoveForms();
   if(page==="report") $("#rRun").click();
+  if(page==="orders") showOrders();
   if(page==="check"){ $("#checkInput").value=""; $("#checkResult").innerHTML=""; $("#checkInput").focus(); }
 }
-$("#tabs").onclick = e => { const b=e.target.closest("button"); if(b) go(b.dataset.go); };
+$("#tabs").onclick = e => {
+  const b=e.target.closest("button"); if(!b) return;
+  if(b.dataset.tab){ po.tab=b.dataset.tab; state.page==="orders" ? renderOrders() : go("orders"); return; }   // Orders sub-menu
+  go(b.dataset.go);
+};
 
 /* ---------------- Data helpers ---------------- */
 async function getStockView(){
@@ -376,7 +460,7 @@ async function loadDash(){
   box.innerHTML = `
     <div class="dash-hero">
       <div class="hi">${hi}, ${esc(state.profile?.display_name||"there")} 👋</div>
-      <div class="big2">${esc(state.branch?state.branch.name:"No branch")}</div>
+      <div class="big2">${esc(whoLabel())}</div>
       <div class="sub">${now.toLocaleDateString([], {weekday:"long", day:"numeric", month:"long", year:"numeric"})}</div>
     </div>
     <div class="grid2">
@@ -748,6 +832,337 @@ function downloadCSV(name,rows){
   const a=document.createElement("a"); a.href=url; a.download=name; a.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+
+/* ---------------- Print Orders ---------------- */
+const PO_PARTNERS = { anjani:"Anjani", delhivery:"Delhivery", post:"Post", other:"Other" };
+const PO_STATUS = { pending:"Pending", courier_pending:"Courier Pending", dispatched:"Dispatched", cancelled:"Cancelled" };
+const DAY_MS = 864e5;
+const po = { orders:[], loaded:false, tab:null, editId:null, names:{}, searchTimer:null };
+
+const branchName = id => state.branches.find(b=>b.id===id)?.name || "—";
+const branchPill = id => `<span class="pill ${branchCode(id)==="UVINVITE"?"br-u":"br-d"}">${esc(branchName(id))}</span>`;
+const fmtMobile = m => m.length===10 ? m.slice(0,5)+" "+m.slice(5) : m;
+const ddmmyyyy = s => s ? s.split("-").reverse().join("-") : "";
+const istParts = new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Kolkata",day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true});
+// "14-10-2026, 09:30 AM" in IST
+function dtIST(d){
+  const p=Object.fromEntries(istParts.formatToParts(new Date(d)).map(x=>[x.type,x.value]));
+  return `${p.day}-${p.month}-${p.year}, ${p.hour}:${p.minute} ${(p.dayPeriod||"").toUpperCase()}`;
+}
+function ago(d){
+  const m=Math.floor((Date.now()-new Date(d))/60000);
+  if(m<1) return "just now"; if(m<60) return m+" min ago";
+  const h=Math.floor(m/60); return h<48 ? h+"h ago" : Math.floor(h/24)+" days ago";
+}
+const lateP = o => o.status==="pending" && Date.now()-new Date(o.created_at) > DAY_MS;
+const lateC = o => o.status==="courier_pending" && Date.now()-new Date(o.printed_at||o.created_at) > DAY_MS;
+const urgent = o => o.needed_by && (o.status==="pending"||o.status==="courier_pending") && o.needed_by<=todayISO();
+const partnerName = o => o.courier_partner==="other" ? (o.courier_other||"Other") : (PO_PARTNERS[o.courier_partner]||"");
+const ofStatus = s => po.orders.filter(o=>o.status===s);
+// printing staff pack the parcels too, so both roles can enter tracking IDs
+const canPack = () => role()==="printing" || role()==="packing";
+const mineBranch = o => role()==="branch" && o.branch_id===state.branch?.id;
+
+function upsertOrder(row){
+  const i=po.orders.findIndex(o=>o.id===row.id);
+  if(i>=0) po.orders[i]=row; else po.orders.push(row);
+}
+async function loadOrders(){
+  // all open orders + everything from the last 60 days (older ones come via search)
+  const since=isoLocal(new Date(Date.now()-60*DAY_MS));
+  const [{ data, error }, { data:profs }] = await Promise.all([
+    sb.from("print_orders").select("*").or(`status.in.(pending,courier_pending),created_at.gte.${since}`).order("created_at"),
+    sb.from("profiles").select("id,display_name")
+  ]);
+  if(error){
+    $("#poList").innerHTML=`<div class="card err">${esc(error.message)}<br>Run print_orders.sql in Supabase (see SETUP.md).</div>`;
+    $("#poListWrap").classList.remove("hide");
+    return;
+  }
+  po.orders=data||[]; po.loaded=true;
+  po.names=Object.fromEntries((profs||[]).map(p=>[p.id,p.display_name]));
+}
+function initOrders(){
+  po.tab = role()==="branch" ? "new" : role()==="packing" ? "courier" : "pending";
+  loadOrders().then(renderOrders);
+  sb.channel("print_orders").on("postgres_changes",{event:"*",schema:"public",table:"print_orders"}, p=>{
+    if(!po.loaded || !p.new?.id) return;
+    const isNew = p.eventType==="INSERT" && !po.orders.some(o=>o.id===p.new.id);
+    upsertOrder(p.new);
+    if(isNew && role()==="printing") toast(`New print order — ${branchName(p.new.branch_id)}`,"info",5000);
+    renderOrders();
+  }).subscribe();
+  setInterval(()=>{ if(po.loaded) renderOrders(); }, 60000);   // keep 24h colours and "x h ago" fresh
+}
+async function showOrders(){
+  if(!po.loaded){ $("#poList").innerHTML='<div class="loading"><span class="spin"></span> Loading…</div>'; await loadOrders(); }
+  renderOrders();
+}
+
+function renderOrders(){
+  if(!po.loaded) return;
+  const pend=ofStatus("pending"), cp=ofStatus("courier_pending");
+  const redP=pend.filter(lateP).length, redC=cp.filter(lateC).length;
+  const dispToday=ofStatus("dispatched").filter(o=>isoLocal(new Date(o.dispatched_at))===todayISO()).length;
+
+  const nb=$("#poNavBadge"), open=pend.length+cp.length;
+  nb.textContent=open; nb.classList.toggle("hide",!open);
+
+  $("#poStats").innerHTML=`
+    <div class="stat tap" data-tab="pending"><div class="n" style="color:${redP?'var(--danger)':'inherit'}">${pend.length}</div>
+      <div class="l">Pending (printing baki)${redP?` · <span style="color:var(--danger)">${redP} red</span>`:""}</div></div>
+    <div class="stat tap" data-tab="courier"><div class="n" style="color:${redC?'#c2410c':'inherit'}">${cp.length}</div>
+      <div class="l">Courier Pending (tracking baki)${redC?` · <span style="color:#c2410c">${redC} late</span>`:""}</div></div>
+    <div class="stat tap" data-tab="dispatched"><div class="n" style="color:var(--ok)">${dispToday}</div>
+      <div class="l">Dispatched today</div></div>`;
+
+  const tabs=[...(role()==="branch"?[["new","+ New Entry",0]]:[]),
+    ["pending","Pending",pend.length],["courier","Courier Pending",cp.length],
+    ["dispatched","Dispatched",0],["cancelled","Cancelled",0],["all","All / Search",0]];
+  // same options as chips (phone) and as a sub-menu under Orders in the sidebar (PC)
+  const tabHtml=tabs.map(([k,l,n])=>
+    `<button data-tab="${k}" class="${po.tab===k?"on":""}">${l}${n?`<span class="badge">${n}</span>`:""}</button>`).join("");
+  $("#poTabs").innerHTML=tabHtml;
+  $("#poSubnav").innerHTML=tabHtml;
+
+  $("#poNew").classList.toggle("hide",po.tab!=="new");
+  $("#poListWrap").classList.toggle("hide",po.tab==="new");
+  $("#poStatus").classList.toggle("hide",po.tab!=="all");
+  if(po.tab==="new"){
+    $("#poBranchBox").innerHTML = state.branch ? `Branch (from your login): <b>${esc(state.branch.name)}</b>`
+      : `<span class="err">Your login is not linked to a branch — cannot add entries</span>`;
+    // entry time is stamped by the server on save; this just shows it (original time when editing)
+    const editing=po.orders.find(o=>o.id===po.editId);
+    $("#poNow").value=dtIST(editing ? editing.created_at : new Date());
+    return;
+  }
+  renderOrderList();
+}
+
+function poMatch(o,q){
+  if(!q) return true;
+  const digits=q.replace(/\D/g,"");
+  return (digits.length>0 && o.mobile.includes(digits)) || o.details.toLowerCase().includes(q);
+}
+function renderOrderList(){
+  // keep what packing has typed (and focus) across re-renders from realtime / timer
+  const keep={};
+  $$("#poList .po").forEach(c=>{ keep[c.dataset.id]=Object.fromEntries($$("[data-f]",c).map(i=>[i.dataset.f,i.value])); });
+  const act=document.activeElement, focusId=act?.closest?.(".po")?.dataset.id, focusF=act?.dataset?.f;
+
+  const q=$("#poSearch").value.trim().toLowerCase();
+  const list=po.orders.filter(o=>poMatch(o,q));
+  const by=(k,dir=1)=>(a,b)=>dir*(new Date(a[k]||0)-new Date(b[k]||0));
+  const cards=arr=>arr.map(poCard).join("");
+  let html="";
+  if(po.tab==="pending"){
+    const l=list.filter(o=>o.status==="pending").sort(by("created_at"));
+    html=cards(l)||`<div class="card muted">Nothing pending for printing 🎉</div>`;
+  } else if(po.tab==="courier"){
+    const l=list.filter(o=>o.status==="courier_pending").sort(by("printed_at"));
+    const quick = canPack() && l.length ? `<div class="card" style="padding:.7rem;">
+        <div class="muted" style="font-size:.82rem;margin-bottom:.4rem;">Quick entry: type each tracking ID and press Enter to jump to the next one, then save all.</div>
+        <button class="btn" id="poSaveAll">Save all filled</button></div>` : "";
+    html=`${quick}${cards(l)||`<div class="card muted">No parcels waiting</div>`}`;
+  } else if(po.tab==="dispatched"){
+    const l=list.filter(o=>o.status==="dispatched").sort(by("dispatched_at",-1));
+    html=cards(l)||`<div class="card muted">Nothing dispatched yet</div>`;
+  } else if(po.tab==="cancelled"){
+    const l=list.filter(o=>o.status==="cancelled").sort(by("updated_at",-1));
+    html=cards(l)||`<div class="card muted">No cancelled orders</div>`;
+  } else {
+    const st=$("#poStatus").value;
+    const l=list.filter(o=>st==="all"||o.status===st).sort(by("created_at",-1));
+    html=cards(l)||`<div class="card muted">No orders${q?" for this search":""}</div>`;
+  }
+  $("#poList").innerHTML=html;
+
+  for(const [id,f] of Object.entries(keep)){
+    const c=$(`#poList .po[data-id="${id}"]`); if(!c) continue;
+    for(const [k,v] of Object.entries(f)){ const i=$(`[data-f="${k}"]`,c); if(i && v) i.value=v; }
+    togglePartnerOther(c);
+  }
+  if(focusId && focusF) $(`#poList .po[data-id="${focusId}"] [data-f="${focusF}"]`)?.focus();
+}
+
+function poCard(o){
+  const name=id=>po.names[id]?` by ${esc(po.names[id])}`:"";
+  const lp=lateP(o), lc=lateC(o), r=role();
+  const meta=[`Entry: ${dtIST(o.created_at)} · ${ago(o.created_at)}${name(o.created_by)}`];
+  if(o.printed_at) meta.push(`Print done: ${dtIST(o.printed_at)}${o.status==="courier_pending"?" · "+ago(o.printed_at):""}${name(o.printed_by)}`);
+  if(o.dispatched_at) meta.push(`Dispatched: ${dtIST(o.dispatched_at)}${name(o.dispatched_by)}`);
+  if(o.needed_by) meta.push(`Needed by: ${ddmmyyyy(o.needed_by)}`);
+
+  let body="", acts=[];
+  const canCancel = (o.status==="pending"||o.status==="courier_pending") && (mineBranch(o)||r==="printing"||r==="packing");
+  if(o.status==="pending"){
+    if(r==="printing") acts.push(`<button class="btn" data-act="print">✓ Print Done</button>`);
+    if(mineBranch(o)) acts.push(`<button class="btn sec sm" data-act="edit">Edit</button>`);
+  }
+  if(o.status==="courier_pending"){
+    if(canPack()){
+      body=`<div class="courier">
+        <select data-f="partner">
+          ${Object.entries(PO_PARTNERS).map(([k,v])=>`<option value="${k}" ${(o.courier_partner||"anjani")===k?"selected":""}>${v}</option>`).join("")}</select>
+        <input data-f="tracking" placeholder="Tracking ID" autocomplete="off" value="${esc(o.tracking_id||"")}" />
+        <input data-f="other" class="hide" placeholder="Partner name" style="grid-column:1/-1" value="${esc(o.courier_other||"")}" />
+      </div><div class="err" data-err></div>`;
+      acts.push(`<button class="btn" data-act="dispatch">🚚 Save / Dispatch</button>`);
+    }
+    if(r==="printing") acts.push(`<button class="btn sec sm" data-act="unprint">↩ Undo Print Done</button>`);
+  }
+  if(o.status==="dispatched"){
+    body=`<div class="trk">🚚 <b>${esc(partnerName(o))}</b> · Tracking ID: <b>${esc(o.tracking_id)}</b></div>`;
+    const msg=`Namaste! Your order from ${branchName(o.branch_id)} has been dispatched.\nCourier: ${partnerName(o)}\nTracking ID: ${o.tracking_id}`;
+    acts.push(`<a class="btn sec sm" style="text-decoration:none;" target="_blank" rel="noopener" href="https://wa.me/91${o.mobile}?text=${encodeURIComponent(msg)}">WhatsApp</a>`);
+    if(canPack()) acts.push(`<button class="btn sec sm" data-act="undispatch">↩ Undo Dispatch</button>`);
+  }
+  if(o.status==="cancelled"){
+    body=`<div class="trk" style="background:#f3f4f6;border-color:#e5e7eb;">Cancelled: ${esc(o.cancel_reason)}</div>`;
+    if(mineBranch(o)||r==="printing") acts.push(`<button class="btn sec sm" data-act="restore">Restore</button>`);
+  }
+  if(canCancel) acts.push(`<button class="btn sec sm" data-act="cancel" style="color:var(--danger);border-color:var(--danger);">Cancel</button>`);
+
+  const alert = lp ? `<div class="alert">⚠ ${esc(branchName(o.branch_id))} — 24h+ pending</div>`
+              : lc ? `<div class="alert or">⚠ ${esc(branchName(o.branch_id))} — Print done, tracking ID baki (24h+)</div>` : "";
+  return `<div class="po ${lp?"red":lc?"orange":""}" data-id="${o.id}">
+    <div class="top">
+      <a class="mob" href="tel:+91${o.mobile}">📞 ${fmtMobile(o.mobile)}</a>
+      ${branchPill(o.branch_id)}
+      <span class="pill s-${o.status}">${PO_STATUS[o.status]}</span>
+      ${urgent(o)?`<span class="pill urgent">Urgent</span>`:""}
+    </div>
+    ${alert}
+    <div class="det">${esc(o.details)}</div>
+    <div class="meta">${meta.join("<br>")}</div>
+    ${body}
+    ${acts.length?`<div class="acts">${acts.join("")}</div>`:""}
+  </div>`;
+}
+
+async function poUpdate(id,patch,render=true){
+  const { data, error } = await sb.from("print_orders").update(patch).eq("id",id).select().single();
+  if(error){ toast(error.message,"bad",5000); return false; }
+  upsertOrder(data);
+  if(render) renderOrders();
+  return true;
+}
+function togglePartnerOther(card){
+  const other=$('[data-f="other"]',card); if(!other) return;
+  other.classList.toggle("hide",$('[data-f="partner"]',card).value!=="other");
+}
+// read + validate one courier card; returns patch or null (and shows the error on the card)
+function courierPatch(card){
+  const v=f=>$(`[data-f="${f}"]`,card).value.trim();
+  const partner=v("partner"), tracking=v("tracking"), other=v("other");
+  const err=$("[data-err]",card); err.textContent="";
+  let msg="";
+  if(!tracking) msg="Enter the tracking ID";
+  else if(!partner) msg="Pick the courier partner";
+  else if(partner==="other" && !other) msg="Type the partner name";
+  if(msg){ err.textContent=msg; return null; }
+  return { status:"dispatched", courier_partner:partner, courier_other:partner==="other"?other:null, tracking_id:tracking };
+}
+
+$("#poTabs").onclick = $("#poStats").onclick = e=>{
+  const b=e.target.closest("[data-tab]"); if(!b) return;
+  po.tab=b.dataset.tab;
+  if(b.dataset.status) $("#poStatus").value=b.dataset.status;
+  renderOrders();
+};
+$("#poStatus").onchange = ()=>{ if(po.loaded) renderOrderList(); };
+$("#poSearch").oninput = ()=>{
+  if(!po.loaded) return;
+  renderOrderList();
+  // older orders (beyond the loaded 60 days) are fetched from the server
+  clearTimeout(po.searchTimer);
+  const q=$("#poSearch").value.trim().replace(/[^\p{L}\p{N} ]/gu,"");
+  if(q.length<3) return;
+  po.searchTimer=setTimeout(async ()=>{
+    const { data } = await sb.from("print_orders").select("*")
+      .or(`mobile.ilike.*${q}*,details.ilike.*${q}*`).order("created_at",{ascending:false}).limit(100);
+    if(data?.length){ data.forEach(upsertOrder); renderOrderList(); }
+  },400);
+};
+$("#poList").addEventListener("change", e=>{ if(e.target.dataset.f==="partner") togglePartnerOther(e.target.closest(".po")); });
+$("#poList").addEventListener("keydown", e=>{
+  if(e.key!=="Enter" || e.target.dataset.f!=="tracking") return;
+  e.preventDefault();
+  const all=$$('#poList [data-f="tracking"]'), i=all.indexOf(e.target);
+  (all[i+1]||$("#poSaveAll"))?.focus();
+});
+$("#poList").addEventListener("click", async e=>{
+  if(e.target.id==="poSaveAll"){
+    const cards=$$("#poList .po").filter(c=>$('[data-f="tracking"]',c)?.value.trim());
+    if(!cards.length){ toast("No tracking IDs filled","bad"); return; }
+    const jobs=cards.map(c=>[c.dataset.id,courierPatch(c)]).filter(([,patch])=>patch);
+    e.target.disabled=true;
+    let ok=0;
+    for(const [id,patch] of jobs) if(await poUpdate(id,patch,false)) ok++;
+    e.target.disabled=false;
+    renderOrders();
+    toast(`${ok} parcel${ok===1?"":"s"} dispatched`+(cards.length>ok?` · ${cards.length-ok} need fixing`:""), ok===cards.length?"ok":"bad");
+    return;
+  }
+  const b=e.target.closest("[data-act]"); if(!b) return;
+  const card=b.closest(".po"), id=card.dataset.id, o=po.orders.find(x=>x.id===id); if(!o) return;
+  const act=b.dataset.act;
+  if(act==="print"){ b.disabled=true; if(await poUpdate(id,{status:"courier_pending"})) toast("Print done ✓","ok"); else b.disabled=false; }
+  if(act==="unprint" && confirm("Move this order back to Pending (print not done)?")) poUpdate(id,{status:"pending"});
+  if(act==="dispatch"){
+    const patch=courierPatch(card); if(!patch) return;
+    b.disabled=true; if(await poUpdate(id,patch)) toast("Dispatched 🚚","ok"); else b.disabled=false;
+  }
+  if(act==="undispatch" && confirm("Move this order back to Courier Pending?")) poUpdate(id,{status:"courier_pending"});
+  if(act==="cancel"){
+    const reason=prompt(`Cancel order for ${fmtMobile(o.mobile)}?\nReason:`);
+    if(reason?.trim()) poUpdate(id,{status:"cancelled",cancel_reason:reason.trim()});
+  }
+  if(act==="restore" && confirm("Restore this order to Pending?")) poUpdate(id,{status:"pending"});
+  if(act==="edit"){
+    po.editId=id; po.tab="new";
+    $("#poMobile").value=o.mobile; $("#poDetails").value=o.details;
+    $("#poFormTitle").textContent="Edit print entry"; $("#poCancelEdit").classList.remove("hide");
+    renderOrders(); window.scrollTo({top:0,behavior:"smooth"});
+  }
+});
+
+function resetOrderForm(){
+  po.editId=null;
+  $("#poMobile").value=""; $("#poDetails").value=""; $("#poErr").textContent="";
+  $("#poFormTitle").textContent="New print entry"; $("#poCancelEdit").classList.add("hide");
+}
+$("#poCancelEdit").onclick = ()=>{ resetOrderForm(); po.tab="pending"; renderOrders(); };
+$("#poSave").onclick = async ()=>{
+  const err=$("#poErr"); err.textContent="";
+  let mobile=$("#poMobile").value.replace(/\D/g,"");
+  if(mobile.length===12 && mobile.startsWith("91")) mobile=mobile.slice(2);
+  else if(mobile.length===11 && mobile.startsWith("0")) mobile=mobile.slice(1);
+  const details=$("#poDetails").value.trim();
+  if(!state.branch){ err.textContent="Your login is not linked to a branch"; return; }
+  if(!/^\d{10}$/.test(mobile)){ err.textContent="Enter a valid 10-digit mobile number"; return; }
+  if(!details){ err.textContent="Enter what to print"; return; }
+  const open=po.orders.filter(o=>o.mobile===mobile && o.id!==po.editId && (o.status==="pending"||o.status==="courier_pending"));
+  if(open.length && !confirm(`${fmtMobile(mobile)} already has ${open.length} open order(s):\n\n${open.map(o=>"• "+o.details.slice(0,60)).join("\n")}\n\nSave this one too?`)) return;
+
+  $("#poSave").disabled=true;
+  let ok;
+  if(po.editId) ok=await poUpdate(po.editId,{mobile,details},false);
+  else {
+    const { data, error } = await sb.from("print_orders")
+      .insert({ branch_id:state.branch.id, mobile, details, created_by:state.user.id }).select().single();
+    if(error) err.textContent=error.message; else upsertOrder(data);
+    ok=!error;
+  }
+  $("#poSave").disabled=false;
+  if(!ok) return;
+  toast(po.editId?"Entry updated":"Saved — sent to printing ✓","ok");
+  const wasEdit=!!po.editId;
+  resetOrderForm();
+  if(wasEdit) po.tab="pending";
+  renderOrders();
+  if(!wasEdit) $("#poMobile").focus();
+};
 
 /* ---------------- Start ---------------- */
 if(SUPABASE_URL.includes("YOUR-PROJECT")){

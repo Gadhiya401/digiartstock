@@ -61,3 +61,30 @@ from profiles p join branches b on b.id = p.branch_id;
   available quantity shown.
 - To add more staff logins for a branch, create the auth user and insert a
   matching `profiles` row pointing at that branch.
+
+## 6. Print Order Tracker (Orders tab)
+1. **SQL Editor → New query**, paste all of [`print_orders.sql`](print_orders.sql), click **Run**.
+   It only adds new tables and a `role` column on `profiles`; existing stock data is not touched.
+   Do **not** re-run `schema.sql`.
+2. **Authentication → Users → Add user** (Auto confirm) for the two new logins,
+   e.g. `printing@...` (production unit) and `packing@...` (courier / packing).
+3. Give them their roles (replace the emails):
+
+```sql
+insert into profiles (id, role, display_name)
+select id, 'printing', 'Printing' from auth.users where email = 'PRINTING_EMAIL'
+on conflict (id) do update set role = 'printing', branch_id = null;
+
+insert into profiles (id, role, display_name)
+select id, 'packing', 'Packing' from auth.users where email = 'PACKING_EMAIL'
+on conflict (id) do update set role = 'packing', branch_id = null;
+```
+
+| Role | Login | Can do |
+|---|---|---|
+| `branch` (default) | DigiArt / UV Invite logins | Add entries for own branch, edit before print, cancel. Sees own branch only |
+| `printing` | Production unit | Sees both branches, **Print Done**, undo print, and also courier partner + tracking ID → **Dispatched** |
+| `packing` | Courier / packing | Sees both branches, enters courier partner + tracking ID → **Dispatched** |
+
+These rules are enforced in the database (trigger `print_orders_guard`), not only in the app.
+Every create / status change / edit is recorded in `print_order_log`.
