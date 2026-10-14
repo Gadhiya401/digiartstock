@@ -431,7 +431,7 @@ function go(page){
 }
 $("#tabs").onclick = e => {
   const b=e.target.closest("button"); if(!b) return;
-  if(b.dataset.tab){ po.tab=b.dataset.tab; state.page==="orders" ? renderOrders() : go("orders"); return; }   // Orders sub-menu
+  if(b.dataset.tab){ setOrderTab(b.dataset.tab); state.page==="orders" ? renderOrders() : go("orders"); return; }   // Orders sub-menu
   go(b.dataset.go);
 };
 
@@ -863,7 +863,7 @@ function downloadCSV(name,rows){
 }
 
 /* ---------------- Print Orders ---------------- */
-const PO_PARTNERS = { anjani:"Anjani", delhivery:"Delhivery", post:"Post", other:"Other" };
+const PO_PARTNERS = { anjani:"Shree Anjani Courier Services (P) Ltd.", delhivery:"Delhivery", post:"Post", other:"Other" };
 const PO_STATUS = { pending:"Pending", courier_pending:"Courier Pending", dispatched:"Dispatched", cancelled:"Cancelled" };
 const DAY_MS = 864e5;
 const po = { orders:[], loaded:false, tab:null, editId:null, names:{}, searchTimer:null };
@@ -1138,17 +1138,25 @@ function courierPatch(card){
 
 $("#poTabs").onclick = $("#poStats").onclick = e=>{
   const b=e.target.closest("[data-tab]"); if(!b) return;
-  po.tab=b.dataset.tab;
+  setOrderTab(b.dataset.tab);
   if(b.dataset.status) $("#poStatus").value=b.dataset.status;
   renderOrders();
 };
+// leaving the form mid-edit drops the edit, so "+ New Entry" never silently updates an old order
+function setOrderTab(t){
+  if(po.editId && t!=="new") resetOrderForm();
+  po.tab=t;
+}
 $("#poStatus").onchange = ()=>{ if(po.loaded) renderOrderList(); };
 $("#poSearch").oninput = ()=>{
   if(!po.loaded) return;
   renderOrderList();
   // older orders (beyond the loaded 60 days) are fetched from the server
   clearTimeout(po.searchTimer);
-  const q=$("#poSearch").value.trim().replace(/[^\p{L}\p{N} ]/gu,"");
+  const raw=$("#poSearch").value.trim();
+  // a phone number typed as "+91 90677 48661" -> "9067748661"
+  let q=/^[\d\s+()-]+$/.test(raw) ? raw.replace(/\D/g,"") : raw.replace(/[^\p{L}\p{N} ]/gu,"");
+  if(q.length>10 && q.startsWith("91")) q=q.slice(-10);
   if(q.length<3) return;
   po.searchTimer=setTimeout(async ()=>{
     const { data } = await sb.from("print_orders").select("*")
@@ -1266,13 +1274,18 @@ async function runOrderReport(){
   if(from>to){ toast("From date is after To date","bad"); return; }
   const col=$("#poRBy").value;
   body.innerHTML='<div class="loading"><span class="spin"></span> Running…</div>';
-  let q=sb.from("print_orders").select("*")
-    .gte(col,`${from}T00:00:00+05:30`).lte(col,`${to}T23:59:59.999+05:30`)   // IST day boundaries
-    .order(col,{ascending:false}).limit(5000);
-  if(bsel.value!=="all" && role()!=="branch") q=q.eq("branch_id",bsel.value);
-  const { data, error } = await q;
-  if(error){ body.innerHTML=`<div class="card err">${esc(error.message)}</div>`; return; }
-  const rows=data||[];
+  // Supabase returns max 1000 rows per request, so fetch page by page
+  const rows=[];
+  for(let page=0;;page++){
+    let q=sb.from("print_orders").select("*")
+      .gte(col,`${from}T00:00:00+05:30`).lte(col,`${to}T23:59:59.999+05:30`)   // IST day boundaries
+      .order(col,{ascending:false}).order("id").range(page*1000,page*1000+999);
+    if(bsel.value!=="all" && role()!=="branch") q=q.eq("branch_id",bsel.value);
+    const { data, error } = await q;
+    if(error){ body.innerHTML=`<div class="card err">${esc(error.message)}</div>`; return; }
+    rows.push(...(data||[]));
+    if(!data || data.length<1000) break;
+  }
   const cnt=(arr,st)=>arr.filter(o=>o.status===st).length;
   const printed=arr=>arr.filter(o=>o.printed_at).length;
   const avg=(arr,a,b)=>{ const v=arr.filter(o=>o[a]&&o[b]).map(o=>new Date(o[b])-new Date(o[a])); return v.length?hrs(v.reduce((x,y)=>x+y,0)/v.length):"—"; };
