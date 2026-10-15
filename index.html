@@ -116,8 +116,15 @@
   .chips button.on .badge { background:#fff; color:var(--primary); }
   .po { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--line);
     border-radius:var(--radius); padding:.8rem .9rem; margin-bottom:.6rem; }
-  .po.red { background:#fef2f2; border-color:#fecaca; border-left-color:var(--danger); }
-  .po.orange { background:#fff7ed; border-color:#fed7aa; border-left-color:#ea580c; }
+  /* 24h+ late: solid red card, text in white / light red so it stays readable */
+  .po.red { background:#dc2626; border-color:#b91c1c; border-left-color:#7f1d1d; color:#fff;
+    box-shadow:0 4px 14px rgba(220,38,38,.35); }
+  .po.red .mob, .po.red .det { color:#fff; }
+  .po.red .meta { color:#fecaca; }
+  .po.red .alert { color:#fff; background:#991b1b; border-radius:8px; padding:.3rem .55rem; display:inline-block; }
+  .po.red .pill { background:#fff; color:#b91c1c; }
+  .po.red .trk { background:#fff1f2; border-color:#fecaca; color:var(--text); }
+  .po.red .err { color:#fff; font-weight:700; }
   .po .top { display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; }
   .po .mob { font-size:1.15rem; font-weight:800; color:var(--text); text-decoration:none; margin-right:auto; }
   .po .det { white-space:pre-wrap; margin:.35rem 0; }
@@ -974,8 +981,8 @@ function renderOrders(){
   $("#poStats").innerHTML=`
     <div class="stat tap" data-tab="pending"><div class="n" style="color:${redP?'var(--danger)':'inherit'}">${pend.length}</div>
       <div class="l">Pending (printing baki)${redP?` · <span style="color:var(--danger)">${redP} red</span>`:""}</div></div>
-    <div class="stat tap" data-tab="courier"><div class="n" style="color:${redC?'#c2410c':'inherit'}">${cp.length}</div>
-      <div class="l">Courier Pending (tracking baki)${redC?` · <span style="color:#c2410c">${redC} late</span>`:""}</div></div>
+    <div class="stat tap" data-tab="courier"><div class="n" style="color:${redC?'var(--danger)':'inherit'}">${cp.length}</div>
+      <div class="l">Courier Pending (tracking baki)${redC?` · <span style="color:var(--danger)">${redC} red</span>`:""}</div></div>
     <div class="stat tap" data-tab="dispatched"><div class="n" style="color:var(--ok)">${dispToday}</div>
       <div class="l">Dispatched today</div></div>`;
 
@@ -1050,7 +1057,8 @@ function renderOrderList(){
     html=cards(l)||`<div class="card muted">No cancelled orders</div>`;
   } else {
     const st=$("#poStatus").value;
-    const l=rankSort(list.filter(o=>st==="all"||o.status===st),q,by("created_at",-1));
+    const late=o=>lateP(o)||lateC(o)?1:0;   // 24h+ red/orange orders first
+    const l=rankSort(list.filter(o=>st==="all"||o.status===st),q,(a,b)=>late(b)-late(a)||by("created_at",-1)(a,b));
     html=cards(l)||`<div class="card muted">No orders${q?" for this search":""}</div>`;
   }
   $("#poList").innerHTML=html;
@@ -1103,8 +1111,8 @@ function poCard(o){
   if(canCancel) acts.push(`<button class="btn sec sm" data-act="cancel" style="color:var(--danger);border-color:var(--danger);">Cancel</button>`);
 
   const alert = lp ? `<div class="alert">⚠ ${esc(branchName(o.branch_id))} — 24h+ pending</div>`
-              : lc ? `<div class="alert or">⚠ ${esc(branchName(o.branch_id))} — Print done, tracking ID baki (24h+)</div>` : "";
-  return `<div class="po ${lp?"red":lc?"orange":""}" data-id="${o.id}">
+              : lc ? `<div class="alert">⚠ ${esc(branchName(o.branch_id))} — Print done, tracking ID baki (24h+)</div>` : "";
+  return `<div class="po ${lp||lc?"red":""}" data-id="${o.id}">
     <div class="top">
       <a class="mob" href="tel:+91${o.mobile}">📞 ${fmtMobile(o.mobile)}</a>
       ${po.names[o.created_by]?`<span class="pill who">👤 ${esc(po.names[o.created_by])}</span>`:""}
@@ -1330,6 +1338,8 @@ async function runOrderReport(){
   const printed=arr=>arr.filter(o=>o.printed_at).length;
   const avg=(arr,a,b)=>{ const v=arr.filter(o=>o[a]&&o[b]).map(o=>new Date(o[b])-new Date(o[a])); return v.length?hrs(v.reduce((x,y)=>x+y,0)/v.length):"—"; };
   const late=rows.filter(o=>lateP(o)||lateC(o)).length;
+  const turn=rows.filter(o=>o.dispatched_at).map(o=>new Date(o.dispatched_at)-new Date(o.created_at));
+  const fastest=turn.length?hrs(Math.min(...turn)):"—", slowest=turn.length?hrs(Math.max(...turn)):"—";
   const byBranch=state.branches.map(b=>[b.name,rows.filter(o=>o.branch_id===b.id)]).filter(([,r])=>r.length);
   const disp=rows.filter(o=>o.status==="dispatched");
   const byCourier=Object.entries(disp.reduce((m,o)=>{ const k=partnerName(o)||"—"; m[k]=(m[k]||0)+1; return m; },{})).sort((a,b)=>b[1]-a[1]);
@@ -1344,18 +1354,24 @@ async function runOrderReport(){
       <div class="stat"><div class="n" style="color:#c2410c">${cnt(rows,"courier_pending")}</div><div class="l">Tracking pending</div></div>
       <div class="stat"><div class="n" style="color:var(--muted)">${cnt(rows,"cancelled")}</div><div class="l">Cancelled</div></div>
     </div>
+    <div class="dash-hero" style="margin-top:1rem;">
+      <div class="hi">⏱ Average time: order entry → courier dispatched</div>
+      <div class="big2">${avg(rows,"created_at","dispatched_at")}</div>
+      <div class="sub">${disp.length ? `Based on ${disp.length} dispatched order${disp.length===1?"":"s"} · fastest ${fastest} · slowest ${slowest}` : "No dispatched orders in this range yet"}</div>
+    </div>
     <div class="dash-panels">
       <div class="panel">
         <h3>Branch-wise</h3>
         <div class="tbl-wrap"><table>
-          <thead><tr><th>Branch</th><th>Orders</th><th>Printed</th><th>Dispatched</th><th>Pending</th><th>Cancelled</th></tr></thead>
+          <thead><tr><th>Branch</th><th>Orders</th><th>Printed</th><th>Dispatched</th><th>Pending</th><th>Cancelled</th><th>Avg to dispatch</th></tr></thead>
           <tbody>${byBranch.map(([n,r])=>`<tr><td>${esc(n)}</td><td>${r.length}</td><td>${printed(r)}</td><td>${cnt(r,"dispatched")}</td>
-            <td>${cnt(r,"pending")+cnt(r,"courier_pending")}</td><td>${cnt(r,"cancelled")}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No data</td></tr>`}</tbody>
+            <td>${cnt(r,"pending")+cnt(r,"courier_pending")}</td><td>${cnt(r,"cancelled")}</td><td><b>${avg(r,"created_at","dispatched_at")}</b></td></tr>`).join("") || `<tr><td colspan="7" class="muted">No data</td></tr>`}</tbody>
         </table></div>
       </div>
       <div class="panel">
         <h3>Courier-wise &amp; speed</h3>
         ${byCourier.map(([k,n])=>`<div class="mini"><span>🚚 ${esc(k)}</span><b>${n}</b></div>`).join("") || `<div class="mini muted">No dispatches</div>`}
+        <div class="mini"><span>Avg entry → dispatch (total)</span><b>${avg(rows,"created_at","dispatched_at")}</b></div>
         <div class="mini"><span>Avg entry → print done</span><b>${avg(rows,"created_at","printed_at")}</b></div>
         <div class="mini"><span>Avg print done → dispatch</span><b>${avg(rows,"printed_at","dispatched_at")}</b></div>
       </div>
@@ -1366,17 +1382,18 @@ async function runOrderReport(){
         <button class="btn sec sm" id="poRCsv">CSV</button>
       </div>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Entry</th><th>Added by</th><th>Branch</th><th>Mobile</th><th>Details</th><th>Status</th><th>Print done</th><th>Dispatched</th><th>Courier</th><th>Tracking ID</th></tr></thead>
+        <thead><tr><th>Entry</th><th>Added by</th><th>Branch</th><th>Mobile</th><th>Details</th><th>Status</th><th>Print done</th><th>Dispatched</th><th>Total time</th><th>Courier</th><th>Tracking ID</th></tr></thead>
         <tbody>${rows.map(o=>`<tr class="${lateP(o)||lateC(o)?"low":""}"><td>${dtIST(o.created_at)}</td><td>${esc(po.names[o.created_by]||"—")}</td><td>${esc(branchName(o.branch_id))}</td>
           <td>${esc(fmtMobile(o.mobile))}</td><td style="white-space:normal;min-width:180px;">${esc(o.details)}</td><td>${PO_STATUS[o.status]}</td>
-          <td>${o.printed_at?dtIST(o.printed_at):"—"}</td><td>${o.dispatched_at?dtIST(o.dispatched_at):"—"}</td>
-          <td>${esc(partnerName(o))}</td><td>${esc(o.tracking_id||"")}</td></tr>`).join("") || `<tr><td colspan="10" class="muted">No orders in this range</td></tr>`}</tbody>
+          <td>${o.printed_at?dtIST(o.printed_at):"—"}</td><td>${o.dispatched_at?dtIST(o.dispatched_at):"—"}</td><td>${o.dispatched_at?hrs(new Date(o.dispatched_at)-new Date(o.created_at)):"—"}</td>
+          <td>${esc(partnerName(o))}</td><td>${esc(o.tracking_id||"")}</td></tr>`).join("") || `<tr><td colspan="11" class="muted">No orders in this range</td></tr>`}</tbody>
       </table></div>
     </div>`;
   $("#poRCsv").onclick = ()=>downloadCSV(`print_orders_${from}_${to}.csv`,
-    [["Entry","Added by","Branch","Mobile","Details","Status","Print done","Print by","Dispatched","Dispatch by","Courier","Tracking ID","Cancel reason"],
+    [["Entry","Added by","Branch","Mobile","Details","Status","Print done","Print by","Dispatched","Dispatch by","Total time (hours)","Courier","Tracking ID","Cancel reason"],
      ...rows.map(o=>[dtIST(o.created_at),po.names[o.created_by]||"",branchName(o.branch_id),o.mobile,o.details,PO_STATUS[o.status],
        o.printed_at?dtIST(o.printed_at):"",po.names[o.printed_by]||"",o.dispatched_at?dtIST(o.dispatched_at):"",po.names[o.dispatched_by]||"",
+       o.dispatched_at?Math.round((new Date(o.dispatched_at)-new Date(o.created_at))/36e5*10)/10:"",
        partnerName(o),o.tracking_id||"",o.cancel_reason||""])]);
 }
 
