@@ -131,6 +131,7 @@
   .pill.s-pending { background:#fee2e2; color:#991b1b; } .pill.s-courier_pending { background:#ffedd5; color:#9a3412; }
   .pill.s-dispatched { background:#dcfce7; color:#166534; } .pill.s-cancelled { background:#e5e7eb; color:#374151; }
   .pill.urgent { background:var(--danger); color:#fff; }
+  .pill.who { background:#f1f5f9; color:#334155; }
   .po-h { font-size:.95rem; margin:1rem 0 .5rem; }
   /* Orders sub-menu: sidebar on PC, chips on phone */
   nav.tabs .subnav { display:none; }
@@ -424,10 +425,14 @@ function go(page){
   $$("section[data-page]").forEach(s=>s.classList.toggle("hide", s.dataset.page!==page));
   if(page==="dash") loadDash();
   if(page==="products") loadProducts();
-  if(page==="in"||page==="out") refreshMoveForms();
+  if(page==="in"||page==="out"){
+    // app may stay open overnight: default the entry date to today on every visit
+    const d=$("#"+page+"Date"); if(d) d.value=todayISO();
+    refreshMoveForms();
+  }
   if(page==="report") $("#rRun").click();
   if(page==="orders") showOrders();
-  if(page==="check"){ $("#checkInput").value=""; $("#checkResult").innerHTML=""; $("#checkInput").focus(); }
+  if(page==="check"){ checkRows=[]; $("#checkInput").value=""; $("#checkResult").innerHTML=""; $("#checkInput").focus(); }   // fresh stock each visit
 }
 $("#tabs").onclick = e => {
   const b=e.target.closest("button"); if(!b) return;
@@ -459,6 +464,17 @@ function searchProducts(rows,q){
   return rows.map(r=>[rank(r),r]).filter(([k])=>k>=0)
     .sort((a,b)=>a[0]-b[0] || a[1].product_no.localeCompare(b[1].product_no,undefined,{numeric:true}))
     .map(([,r])=>r);
+}
+// Supabase returns max 1000 rows per request, so fetch page by page.
+// make() must build a fresh, stably ordered query each call.
+async function fetchAll(make){
+  const out=[];
+  for(let page=0;;page++){
+    const { data, error } = await make().range(page*1000,page*1000+999);
+    if(error) return { data:null, error };
+    out.push(...(data||[]));
+    if(!data || data.length<1000) return { data:out, error:null };
+  }
 }
 function branchCode(id){ return state.branches.find(b=>b.id===id)?.code || ""; }
 function branchIdByCode(code){ return state.branches.find(b=>b.code===code)?.id || null; }
@@ -683,6 +699,7 @@ async function saveMove(type){
     // re-check live stock
     await picker.refresh();
     const live=picker.get();
+    if(!live){ errEl.textContent="This product was removed — pick it again"; return; }
     if(qty > Number(live.current_stock)){
       errEl.textContent=`Not enough stock. Available: ${fmt(live.current_stock)} ${live.unit||''}`;
       return;
@@ -760,19 +777,27 @@ function rangeOf(key,fromEl,toEl){
   return [fromEl.value||iso(d), toEl.value||iso(d)];
 }
 const rangeDates = () => rangeOf(rRange,$("#rFrom"),$("#rTo"));
-let lastReport=null;
+let lastReport=null, hisabRun=0;
 $("#rRun").onclick = async ()=>{
   const [from,to]=rangeDates();
   if(from>to){ toast("From date is after To date","bad"); return; }
   const type=$("#rType").value, branchSel=$("#rBranch").value, prodQ=$("#rProd").value.trim().toLowerCase();
   const body=$("#reportBody");
+  const run=++hisabRun;   // only the latest click may draw
   body.innerHTML='<div class="loading"><span class="spin"></span> Running…</div>';
 
-  let query = sb.from("stock_moves")
-    .select("move_type,qty,branch_id,party,note,move_date,created_by,products(product_no,name,unit)")
-    .gte("move_date",from).lte("move_date",to).order("move_date",{ascending:false});
-  if(type!=="both") query=query.eq("move_type",type);
-  const { data, error } = await query;
+  const [{ data, error }, { data:stockAll }, { data:after }] = await Promise.all([
+    fetchAll(()=>{
+      let q=sb.from("stock_moves")
+        .select("move_type,qty,branch_id,party,note,move_date,created_by,products(product_no,name,unit)")
+        .gte("move_date",from).lte("move_date",to).order("move_date",{ascending:false}).order("id");
+      return type!=="both" ? q.eq("move_type",type) : q;
+    }),
+    // closing stock on the "to" date = today's stock, undoing everything after "to"
+    fetchAll(()=>sb.from("v_product_stock").select("product_no,current_stock").order("product_no")),
+    fetchAll(()=>sb.from("stock_moves").select("move_type,qty,products(product_no)").gt("move_date",to).order("id"))
+  ]);
+  if(run!==hisabRun) return;
   if(error){ body.innerHTML=`<div class="err">${esc(error.message)}</div>`; return; }
 
   // profiles for user names
@@ -802,8 +827,13 @@ $("#rRun").onclick = async ()=>{
     else if(m.bcode==="DIGIART") byProd[k].outD+=Number(m.qty);
     else if(m.bcode==="UVINVITE") byProd[k].outU+=Number(m.qty);
   }
-  const stock = await getStockView();
-  const closingOf = no => stock.find(s=>s.product_no===no)?.current_stock ?? "";
+  const closing={};
+  for(const s of stockAll||[]) closing[s.product_no]=Number(s.current_stock);
+  for(const m of after||[]){
+    const no=m.products?.product_no; if(!(no in closing)) continue;
+    closing[no] += m.move_type==="IN" ? -Number(m.qty) : Number(m.qty);
+  }
+  const closingOf = no => closing[no] ?? "";
 
   const prodRows = Object.values(byProd).sort((a,b)=>a.product_no.localeCompare(b.product_no));
 
@@ -825,7 +855,7 @@ $("#rRun").onclick = async ()=>{
         <button class="btn sec sm" id="csvProd">CSV</button>
       </div>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>No</th><th>Name</th><th>IN</th><th>OUT DA</th><th>OUT UV</th><th>Total OUT</th><th>Closing</th></tr></thead>
+        <thead><tr><th>No</th><th>Name</th><th>IN</th><th>OUT DA</th><th>OUT UV</th><th>Total OUT</th><th>Closing on ${esc(ddmmyyyy(to))}</th></tr></thead>
         <tbody>${prodRows.map(r=>`<tr><td>${esc(r.product_no)}</td><td>${esc(r.name)}</td>
           <td>${fmt(r.in)}</td><td>${fmt(r.outD)}</td><td>${fmt(r.outU)}</td><td>${fmt(r.outD+r.outU)}</td>
           <td>${fmt(closingOf(r.product_no))}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">No data</td></tr>`}</tbody>
@@ -900,7 +930,7 @@ async function loadOrders(){
   // all open orders + everything from the last 60 days (older ones come via search)
   const since=isoLocal(new Date(Date.now()-60*DAY_MS));
   const [{ data, error }, { data:profs }] = await Promise.all([
-    sb.from("print_orders").select("*").or(`status.in.(pending,courier_pending),created_at.gte.${since}`).order("created_at"),
+    fetchAll(()=>sb.from("print_orders").select("*").or(`status.in.(pending,courier_pending),created_at.gte.${since}`).order("created_at").order("id")),
     sb.from("profiles").select("id,display_name")
   ]);
   if(error){
@@ -922,6 +952,10 @@ function initOrders(){
     renderOrders();
   }).subscribe();
   setInterval(()=>{ if(po.loaded) renderOrders(); }, 60000);   // keep 24h colours and "x h ago" fresh
+  // realtime can miss changes while the PC sleeps / net drops: re-fetch when the tab comes back and every 5 min
+  const refetch=()=>{ if(po.loaded) loadOrders().then(renderOrders); };
+  document.addEventListener("visibilitychange",()=>{ if(!document.hidden) refetch(); });
+  setInterval(refetch, 5*60000);
 }
 async function showOrders(){
   if(!po.loaded){ $("#poList").innerHTML='<div class="loading"><span class="spin"></span> Loading…</div>'; await loadOrders(); }
@@ -1073,6 +1107,7 @@ function poCard(o){
   return `<div class="po ${lp?"red":lc?"orange":""}" data-id="${o.id}">
     <div class="top">
       <a class="mob" href="tel:+91${o.mobile}">📞 ${fmtMobile(o.mobile)}</a>
+      ${po.names[o.created_by]?`<span class="pill who">👤 ${esc(po.names[o.created_by])}</span>`:""}
       ${branchPill(o.branch_id)}
       <span class="pill s-${o.status}">${PO_STATUS[o.status]}</span>
       ${urgent(o)?`<span class="pill urgent">Urgent</span>`:""}
@@ -1145,6 +1180,7 @@ $("#poTabs").onclick = $("#poStats").onclick = e=>{
 // leaving the form mid-edit drops the edit, so "+ New Entry" never silently updates an old order
 function setOrderTab(t){
   if(po.editId && t!=="new") resetOrderForm();
+  if(t==="report") po.reportRan=false;   // fresh numbers every time the report is opened
   po.tab=t;
 }
 $("#poStatus").onchange = ()=>{ if(po.loaded) renderOrderList(); };
@@ -1181,6 +1217,8 @@ $("#poList").addEventListener("click", async e=>{
     for(const [id,patch] of jobs) if(await poUpdate(id,patch,false)) ok++;
     e.target.disabled=false;
     renderOrders();
+    // re-render cleared the messages: show them again on the cards that still need fixing
+    $$("#poList .po").forEach(c=>{ if($('[data-f="tracking"]',c)?.value.trim()) courierPatch(c); });
     toast(`${ok} parcel${ok===1?"":"s"} dispatched`+(cards.length>ok?` · ${cards.length-ok} need fixing`:""), ok===cards.length?"ok":"bad");
     return;
   }
@@ -1264,6 +1302,7 @@ const hrs = ms => { const h=ms/36e5; return h<1 ? Math.round(h*60)+" min" : h<48
 
 async function runOrderReport(){
   po.reportRan=true;
+  const run = po.reportRun = (po.reportRun||0)+1;   // only the latest click may draw
   const body=$("#poRBody");
   // branch filter only for printing/packing; branch logins only ever see their own branch
   const bsel=$("#poRBranch");
@@ -1282,6 +1321,7 @@ async function runOrderReport(){
       .order(col,{ascending:false}).order("id").range(page*1000,page*1000+999);
     if(bsel.value!=="all" && role()!=="branch") q=q.eq("branch_id",bsel.value);
     const { data, error } = await q;
+    if(run!==po.reportRun) return;
     if(error){ body.innerHTML=`<div class="card err">${esc(error.message)}</div>`; return; }
     rows.push(...(data||[]));
     if(!data || data.length<1000) break;
@@ -1326,16 +1366,16 @@ async function runOrderReport(){
         <button class="btn sec sm" id="poRCsv">CSV</button>
       </div>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Entry</th><th>Branch</th><th>Mobile</th><th>Details</th><th>Status</th><th>Print done</th><th>Dispatched</th><th>Courier</th><th>Tracking ID</th></tr></thead>
-        <tbody>${rows.map(o=>`<tr class="${lateP(o)||lateC(o)?"low":""}"><td>${dtIST(o.created_at)}</td><td>${esc(branchName(o.branch_id))}</td>
+        <thead><tr><th>Entry</th><th>Added by</th><th>Branch</th><th>Mobile</th><th>Details</th><th>Status</th><th>Print done</th><th>Dispatched</th><th>Courier</th><th>Tracking ID</th></tr></thead>
+        <tbody>${rows.map(o=>`<tr class="${lateP(o)||lateC(o)?"low":""}"><td>${dtIST(o.created_at)}</td><td>${esc(po.names[o.created_by]||"—")}</td><td>${esc(branchName(o.branch_id))}</td>
           <td>${esc(fmtMobile(o.mobile))}</td><td style="white-space:normal;min-width:180px;">${esc(o.details)}</td><td>${PO_STATUS[o.status]}</td>
           <td>${o.printed_at?dtIST(o.printed_at):"—"}</td><td>${o.dispatched_at?dtIST(o.dispatched_at):"—"}</td>
-          <td>${esc(partnerName(o))}</td><td>${esc(o.tracking_id||"")}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">No orders in this range</td></tr>`}</tbody>
+          <td>${esc(partnerName(o))}</td><td>${esc(o.tracking_id||"")}</td></tr>`).join("") || `<tr><td colspan="10" class="muted">No orders in this range</td></tr>`}</tbody>
       </table></div>
     </div>`;
   $("#poRCsv").onclick = ()=>downloadCSV(`print_orders_${from}_${to}.csv`,
-    [["Entry","Branch","Mobile","Details","Status","Print done","Print by","Dispatched","Dispatch by","Courier","Tracking ID","Cancel reason"],
-     ...rows.map(o=>[dtIST(o.created_at),branchName(o.branch_id),o.mobile,o.details,PO_STATUS[o.status],
+    [["Entry","Added by","Branch","Mobile","Details","Status","Print done","Print by","Dispatched","Dispatch by","Courier","Tracking ID","Cancel reason"],
+     ...rows.map(o=>[dtIST(o.created_at),po.names[o.created_by]||"",branchName(o.branch_id),o.mobile,o.details,PO_STATUS[o.status],
        o.printed_at?dtIST(o.printed_at):"",po.names[o.printed_by]||"",o.dispatched_at?dtIST(o.dispatched_at):"",po.names[o.dispatched_by]||"",
        partnerName(o),o.tracking_id||"",o.cancel_reason||""])]);
 }
