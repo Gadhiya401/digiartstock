@@ -925,8 +925,6 @@ const lateC = o => o.status==="courier_pending" && Date.now()-new Date(o.printed
 const urgent = o => o.needed_by && (o.status==="pending"||o.status==="courier_pending") && o.needed_by<=todayISO();
 const partnerName = o => o.courier_partner==="other" ? (o.courier_other||"Other") : (PO_PARTNERS[o.courier_partner]||"");
 const ofStatus = s => po.orders.filter(o=>o.status===s);
-// printing staff pack the parcels too, so both roles can enter tracking IDs
-const canPack = () => role()==="printing" || role()==="packing";
 const mineBranch = o => role()==="branch" && o.branch_id===state.branch?.id;
 
 function upsertOrder(row){
@@ -1045,7 +1043,7 @@ function renderOrderList(){
     html=cards(l)||`<div class="card muted">Nothing pending for printing 🎉</div>`;
   } else if(po.tab==="courier"){
     const l=list.filter(o=>o.status==="courier_pending").sort(by("printed_at"));
-    const quick = canPack() && l.length ? `<div class="card" style="padding:.7rem;">
+    const quick = l.length ?`<div class="card" style="padding:.7rem;">
         <div class="muted" style="font-size:.82rem;margin-bottom:.4rem;">Quick entry: type each tracking ID and press Enter to jump to the next one, then save all.</div>
         <button class="btn" id="poSaveAll">Save all filled</button></div>` : "";
     html=`${quick}${cards(l)||`<div class="card muted">No parcels waiting</div>`}`;
@@ -1086,15 +1084,14 @@ function poCard(o){
     if(mineBranch(o)) acts.push(`<button class="btn sec sm" data-act="edit">Edit</button>`);
   }
   if(o.status==="courier_pending"){
-    if(canPack()){
-      body=`<div class="courier">
-        <select data-f="partner">
-          ${Object.entries(PO_PARTNERS).map(([k,v])=>`<option value="${k}" ${(o.courier_partner||"anjani")===k?"selected":""}>${v}</option>`).join("")}</select>
-        <input data-f="tracking" placeholder="Tracking ID (Anjani: 10 digits)" autocomplete="off" value="${esc(o.tracking_id||"")}" />
-        <input data-f="other" class="hide" placeholder="Partner name" style="grid-column:1/-1" value="${esc(o.courier_other||"")}" />
-      </div><div class="err" data-err></div>`;
-      acts.push(`<button class="btn" data-act="dispatch">🚚 Save / Dispatch</button>`);
-    }
+    // every login can enter courier details (branch staff only see their own branch's orders)
+    body=`<div class="courier">
+      <select data-f="partner">
+        ${Object.entries(PO_PARTNERS).map(([k,v])=>`<option value="${k}" ${(o.courier_partner||"anjani")===k?"selected":""}>${v}</option>`).join("")}</select>
+      <input data-f="tracking" placeholder="Tracking ID (Anjani: 10 digits)" autocomplete="off" value="${esc(o.tracking_id||"")}" />
+      <input data-f="other" class="hide" placeholder="Partner name" style="grid-column:1/-1" value="${esc(o.courier_other||"")}" />
+    </div><div class="err" data-err></div>`;
+    acts.push(`<button class="btn" data-act="dispatch">🚚 Save / Dispatch</button>`);
     if(r==="printing") acts.push(`<button class="btn sec sm" data-act="unprint">↩ Undo Print Done</button>`);
   }
   if(o.status==="dispatched"){
@@ -1102,7 +1099,7 @@ function poCard(o){
       ${trackUrl(o)?` · <a href="${esc(trackUrl(o))}" target="_blank" rel="noopener">Track ↗</a>`:""}</div>`;
     acts.push(`<button class="btn sm" data-act="copy">📋 Copy details</button>`);
     acts.push(`<a class="btn sec sm" style="text-decoration:none;" target="_blank" rel="noopener" href="https://wa.me/91${o.mobile}?text=${encodeURIComponent(courierText(o))}">WhatsApp</a>`);
-    if(canPack()) acts.push(`<button class="btn sec sm" data-act="undispatch">↩ Undo Dispatch</button>`);
+    acts.push(`<button class="btn sec sm" data-act="undispatch">↩ Undo Dispatch</button>`);
   }
   if(o.status==="cancelled"){
     body=`<div class="trk" style="background:#f3f4f6;border-color:#e5e7eb;">Cancelled: ${esc(o.cancel_reason)}</div>`;

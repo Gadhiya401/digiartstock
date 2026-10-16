@@ -82,7 +82,7 @@ on conflict (id) do update set role = 'packing', branch_id = null;
 
 | Role | Login | Can do |
 |---|---|---|
-| `branch` (default) | DigiArt / UV Invite logins | Add entries for own branch, edit before print, cancel. Sees own branch only |
+| `branch` (default) | DigiArt / UV Invite logins | Add entries for own branch, edit before print, cancel, and courier partner + tracking ID → **Dispatched**. Sees own branch only |
 | `printing` | Production unit | Sees both branches, **Print Done**, undo print, and also courier partner + tracking ID → **Dispatched** |
 | `packing` | Courier / packing | Sees both branches, enters courier partner + tracking ID → **Dispatched** |
 

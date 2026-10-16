@@ -8,7 +8,7 @@
 -- branch   = Surat / Rajkot branch staff (profiles.branch_id set)
 -- printing = production unit, marks Print Done (sees both branches)
 -- packing  = enters courier partner + tracking ID (sees both branches)
---            (printing can also enter tracking IDs: same person packs the parcels)
+-- every role can enter courier partner + tracking ID / dispatch (branch: own branch only, via RLS)
 alter table profiles add column if not exists role text not null default 'branch'
   check (role in ('branch','printing','packing'));
 
@@ -91,20 +91,15 @@ begin
      and not (r = 'branch' and old.status = 'pending' and new.status = 'pending') then
     raise exception 'Mobile / details can be edited only by the branch, before print is done';
   end if;
-  if (new.courier_partner, new.courier_other, new.tracking_id)
-       is distinct from (old.courier_partner, old.courier_other, old.tracking_id)
-     and r not in ('printing','packing') then
-    raise exception 'Only the printing / packing login can enter courier details';
-  end if;
 
   if new.status is distinct from old.status then
     if old.status = 'pending' and new.status = 'courier_pending' and r = 'printing' then
       new.printed_at := now(); new.printed_by := auth.uid();
     elsif old.status = 'courier_pending' and new.status = 'pending' and r = 'printing' then
       new.printed_at := null; new.printed_by := null;                -- undo Print Done
-    elsif old.status = 'courier_pending' and new.status = 'dispatched' and r in ('printing','packing') then
+    elsif old.status = 'courier_pending' and new.status = 'dispatched' then
       new.dispatched_at := now(); new.dispatched_by := auth.uid();
-    elsif old.status = 'dispatched' and new.status = 'courier_pending' and r in ('printing','packing') then
+    elsif old.status = 'dispatched' and new.status = 'courier_pending' then
       new.dispatched_at := null; new.dispatched_by := null;          -- undo Dispatch
     elsif old.status in ('pending','courier_pending') and new.status = 'cancelled' then
       null;                                                          -- anyone who can see the row
