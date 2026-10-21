@@ -183,6 +183,7 @@
   <div class="guide"></div>
   <div class="bar">
     <div id="scanMsg"></div>
+    <button class="btn hide" id="scanShoot" style="font-size:1.1rem;padding:1rem;">📸 Take photo</button>
     <button class="btn sec hide" id="scanPick">Pick the order myself</button>
     <button class="btn sec" id="scanPhoto">🖼 Use a photo instead</button>
     <button class="btn" id="scanClose" style="background:#444;">✕ Close</button>
@@ -985,7 +986,7 @@ async function loadOrders(){
 }
 function initOrders(){
   po.tab = role()==="branch" ? "new" : role()==="packing" ? "courier" : "pending";
-  loadOrders().then(renderOrders);
+  loadOrders().then(()=>{ renderOrders(); runQueue(); });   // runQueue: photos left from last time
   cleanSlips().catch(()=>{});   // bucket missing (SQL not run yet) etc: photos just stay a bit longer
   sb.channel("print_orders").on("postgres_changes",{event:"*",schema:"public",table:"print_orders"}, p=>{
     if(!po.loaded || !p.new?.id) return;
@@ -996,7 +997,7 @@ function initOrders(){
   }).subscribe();
   setInterval(()=>{ if(po.loaded) renderOrders(); }, 60000);   // keep 24h colours and "x h ago" fresh
   // realtime can miss changes while the PC sleeps / net drops: re-fetch when the tab comes back and every 5 min
-  const refetch=()=>{ if(po.loaded) loadOrders().then(renderOrders); };
+  const refetch=()=>{ if(po.loaded) loadOrders().then(()=>{ renderOrders(); runQueue(); }); };
   document.addEventListener("visibilitychange",()=>{ if(!document.hidden) refetch(); });
   setInterval(refetch, 5*60000);
 }
@@ -1091,8 +1092,14 @@ function renderOrderList(){
     const unmatched = nUm && !po.pick ? `<div class="card" style="padding:.7rem;border:2px solid #f59e0b;">
         ⚠ <b>${nUm}</b> scanned parcel${nUm===1?"":"s"}: order not found yet.
         <button class="btn sec sm" id="poUnmatchedGo">Open list</button></div>` : "";
-    const quick = l.length||po.pick ? `<div class="card" style="padding:.7rem;">
+    const qt=queueText();
+    const quick = l.length||po.pick||qt ? `<div class="card" style="padding:.7rem;">
         <button class="btn" id="poScanAny" style="margin-bottom:.6rem;">📷 Scan parcel: finds the order &amp; dispatches</button>
+        <div class="grid2" style="margin-bottom:.4rem;">
+          <button class="btn sec" id="poPhotoMode">📸 Photo mode</button>
+          <button class="btn sec" id="poGallery">🖼 Pick photos</button></div>
+        <div class="muted" style="font-size:.8rem;margin-bottom:.6rem;">Just take a photo of each slip (or pick them from the gallery): they are read in the background and dispatched on their own.</div>
+        <div id="poQueue" class="${qt?"":"hide"}" style="font-weight:600;font-size:.88rem;margin-bottom:.6rem;">${qt}</div>
         <div class="muted" style="font-size:.82rem;margin-bottom:.4rem;">Or type each tracking ID and press Enter to jump to the next one, then save all.</div>
         <button class="btn sec" id="poSaveAll">Save all filled</button></div>` : "";
     html=`${pick}${unmatched}${quick}${cards(l)||`<div class="card muted">No parcels waiting</div>`}`;
@@ -1369,7 +1376,7 @@ function branchFromText(text){
 /* ---- Slip photos: a small copy kept SLIP_DAYS in the "slips" storage bucket ---- */
 const SLIP_DAYS=15;
 // whole photo / frame, turned upright, max 1280px
-function slipShot(src,q=0){ const W=src.width, H=src.height; return photoPiece(src,0,0,W,H,Math.min(1,1280/Math.max(W,H)),q); }
+function slipShot(src,q=0,max=1280){ const W=src.width, H=src.height; return photoPiece(src,0,0,W,H,Math.min(1,max/Math.max(W,H)),q); }
 // WebP where the browser can make it (~100 KB), else JPEG
 async function slipBlob(c){
   const make=(type,quality)=>new Promise(ok=>c.toBlob(ok,type,quality));
@@ -1405,7 +1412,7 @@ const slipKept = o => o.slip_path && Date.now()-new Date(o.dispatched_at) < SLIP
 
 /* ---- Scanned parcels whose order was not found: the "Mobile not found" list ---- */
 async function loadUnmatched(){
-  const { data, error } = await sb.from("courier_scans").select("*").is("resolved_order_id",null)
+  const { data, error } = await sb.from("courier_scans").select("*").is("resolved_order_id",null).eq("state","unmatched")
     .gte("created_at",new Date(Date.now()-SLIP_DAYS*DAY_MS).toISOString()).order("created_at");
   po.unmatched = error ? [] : data||[];   // table missing until print_orders.sql is re-run
 }
@@ -1473,9 +1480,9 @@ async function runSlipPhotos(){
         <b>⚠ Mobile not found · ${scans.length}</b>
         <div class="muted" style="font-size:.8rem;">The order was not found when these were scanned. Tap <b>Match order</b> and pick the right order.</div></div>
       <div class="phgrid" style="margin-bottom:.9rem;">${scans.map(s=>{
-        const used=po.orders.find(o=>o.tracking_id===s.tracking_id);
+        const used=s.tracking_id && po.orders.find(o=>o.tracking_id===s.tracking_id);
         return `<div class="ph" data-scan="${s.id}">${img(po.scanUrls[s.id],"Slip "+s.tracking_id)}
-        <div class="info"><b>🚚 ${esc(s.tracking_id)}</b><span>${esc(PO_PARTNERS[s.courier_partner]||"")} · ${dtIST(s.created_at).split(", ")[1]}</span>
+        <div class="info"><b>🚚 ${esc(s.tracking_id||"No barcode read")}</b><span>${esc(PO_PARTNERS[s.courier_partner]||"")} · ${dtIST(s.created_at).split(", ")[1]}</span>
           <select data-ph="branch" class="${s.branch_id?"":"unknown"}" title="Sending branch">${[["","Branch ?"],...state.branches.map(b=>[b.id,b.name])]
             .map(([v,l])=>`<option value="${v}" ${(s.branch_id||"")===v?"selected":""}>${esc(l)}</option>`).join("")}</select>
           <span class="muted">${esc(s.reason||"")}</span>
@@ -1536,8 +1543,14 @@ $("#poPhBody").addEventListener("click", async e=>{
   if(sc){   // a "Mobile not found" card
     const s=po.unmatched.find(x=>x.id===sc.dataset.scan); if(!s) return;
     if(b.dataset.ph==="open" && po.scanUrls[s.id]) window.open(po.scanUrls[s.id],"_blank");
-    if(b.dataset.ph==="match")
-      startPick({ awb:s.tracking_id, partner:s.courier_partner, why:"Match this scanned parcel.", scanId:s.id, slip_path:s.slip_path });
+    if(b.dataset.ph==="match"){
+      // no barcode in the photo: the tracking ID is typed (read it off the photo)
+      const awb=s.tracking_id || prompt("Tracking ID for this parcel (see the photo):")?.replace(/\s/g,"");
+      if(!awb) return;
+      const partner=s.courier_partner || (/^\d{10}$/.test(awb) ? "anjani" : /^[A-Z]{2}\d{9}IN$/i.test(awb) ? "post" : "delhivery");
+      if(!s.tracking_id) sb.from("courier_scans").update({ tracking_id:awb, courier_partner:partner }).eq("id",s.id).then(()=>{});   // query runs on then()
+      startPick({ awb, partner, why:"Match this scanned parcel.", scanId:s.id, slip_path:s.slip_path });
+    }
     if(b.dataset.ph==="del" && confirm(`Delete scanned parcel ${s.tracking_id} from the list?`)){
       const { error } = await sb.from("courier_scans").delete().eq("id",s.id);
       if(error){ toast(error.message,"bad"); return; }
@@ -1616,6 +1629,124 @@ async function scanParcelPhoto(file){
   } catch(e){ toast("Could not read the photo: "+e.message,"bad",6000); }
 }
 
+/* ---- Photo queue: take many slip photos (or pick them from the gallery), each is read in the
+   background one after another and dispatched on its own; ones it cannot place go to the
+   "Mobile not found" list. Every photo is uploaded first as a "queued" courier_scans row, so if
+   the app is closed the rest are read the next time this login opens the app. ---- */
+const queue={ running:false, local:{}, waiting:0, done:0, failed:0 };   // local: scan id -> full photo Blob
+function queueText(){
+  const { waiting, done, failed } = queue;
+  if(!waiting && !done && !failed) return "";
+  return [waiting && `⏳ ${waiting} photo${waiting===1?"":"s"} being read`, done && `✓ ${done} dispatched`,
+    failed && `⚠ ${failed} to match (Courier Photos)`].filter(Boolean).join(" · ");
+}
+function showQueue(){
+  const el=$("#poQueue"); if(el){ el.textContent=queueText(); el.classList.toggle("hide",!queueText()); }
+  if(scan.photos && scan.run) $("#scanMsg").textContent=queueText() || "Take a photo of each parcel's slip";
+}
+// photo -> upload + queued row -> background reader
+async function enqueuePhoto(blob){
+  queue.waiting++; showQueue();
+  try {
+    const shot=slipShot(await photoCanvas(blob,1600),0,1600);   // copy to read later if the app is closed
+    const slip_path=await uploadSlip("scan",shot);
+    const { data, error } = await sb.from("courier_scans")
+      .insert({ state:"queued", slip_path, branch_id:state.branch?.id||null }).select().single();
+    if(error) throw error;
+    queue.local[data.id]=blob;
+  } catch(e){ queue.waiting--; showQueue(); toast("Photo not saved: "+e.message,"bad",6000); return; }
+  runQueue();
+}
+async function runQueue(){
+  if(queue.running || !state.user) return;
+  queue.running=true;
+  try { for(let s; (s=await claimScan()); ) await readQueued(s).catch(e=>finishQueued(s,{ state:"unmatched", reason:"Could not read the photo: "+e.message })); }
+  finally { queue.running=false; showQueue(); }
+}
+// next queued photo of this login (or one left "processing" by a closed app), taken so that a
+// second open tab / device does not read it too
+async function claimScan(){
+  const { data, error } = await sb.from("courier_scans").select("*").eq("created_by",state.user.id)
+    .in("state",["queued","processing"]).order("created_at");
+  if(error) return null;
+  const stale=Date.now()-3*60e3;
+  const todo=(data||[]).filter(s=>s.state==="queued" || new Date(s.claimed_at||0)<stale);
+  queue.waiting=Math.max(queue.waiting,todo.length);
+  for(const s of todo){
+    let q=sb.from("courier_scans").update({ state:"processing", claimed_at:new Date().toISOString() }).eq("id",s.id).eq("state",s.state);
+    if(s.state==="processing") q=q.eq("claimed_at",s.claimed_at);
+    const { data:got } = await q.select().maybeSingle();
+    if(got) return got;
+  }
+  return null;
+}
+async function readQueued(s){
+  let blob=queue.local[s.id];
+  if(!blob){   // queued in an earlier session: read the uploaded copy
+    const { data, error } = await sb.storage.from("slips").createSignedUrl(s.slip_path,600);
+    if(error) throw error;
+    blob=await (await fetch(data.signedUrl)).blob();
+  }
+  const photo=await photoCanvas(blob,3000);
+  const r=await scanBarcodes(photo, v=>awbHits(v,null,null));
+  if(!r) return finishQueued(s,{ state:"unmatched", reason:"No courier barcode found in the photo. Match it and type the tracking ID, or delete and retake." });
+  // the stored copy, now turned upright and small, replaces the one uploaded for reading
+  let slip_path=s.slip_path;
+  if(queue.local[s.id] && r.q){
+    try { slip_path=await uploadSlip("scan",slipShot(photo,r.q)); sb.storage.from("slips").remove([s.slip_path]); } catch { slip_path=s.slip_path; }
+  }
+  const awb=r.hits[0], partner=r.partner, base={ tracking_id:awb, courier_partner:partner, slip_path };
+  if(r.hits.length>1) return finishQueued(s,{ ...base, state:"unmatched", reason:`More than one number found (${r.hits.join(", ")}).` });
+  const texts=[];
+  let m=await findOrdersOnSlip(photo,r.q,undefined,undefined,texts);
+  if(!m.length) m=await findOrdersOnSlip(photo,r.q,[0,2],1600,texts);
+  const text=texts.join("\n"), o=m.length===1 && m[0];
+  const has=po.orders.find(x=>x.tracking_id===awb && (!o || x.id!==o.id));
+  // same parcel photographed twice: already dispatched with this tracking ID, nothing to do
+  if(has && has.status==="dispatched" && !o)
+    return finishQueued(s,{ ...base, state:"done", resolved_order_id:has.id, resolved_at:new Date().toISOString(), reason:"Already dispatched" },"skip");
+  if(o && !has){
+    if(await poUpdate(o.id,{ status:"dispatched", courier_partner:partner, courier_other:null, tracking_id:awb, slip_path },false)){
+      toast(`Dispatched 🚚 ${awb} → ${fmtMobile(o.mobile)} (${branchName(o.branch_id)})`,"ok",5000);
+      return finishQueued(s,{ ...base, state:"done", branch_id:o.branch_id, resolved_order_id:o.id, resolved_at:new Date().toISOString() },"done");
+    }
+  }
+  finishQueued(s,{ ...base, state:"unmatched", branch_id:branchFromText(text)||s.branch_id,
+    reason: has ? `${awb} is already on another order.` : m.length>1 ? "More than one order for this mobile." : noMatchReason(text) });
+}
+async function finishQueued(s,patch,how){
+  delete queue.local[s.id];
+  queue.waiting=Math.max(0,queue.waiting-1);
+  if(how==="done") queue.done++; else if(patch.state==="unmatched") queue.failed++;
+  const { data } = await sb.from("courier_scans").update(patch).eq("id",s.id).select().maybeSingle();
+  if(patch.state==="unmatched" && data){ po.unmatched.push(data); toast(`Photo: ${patch.reason} → Courier Photos`,"bad",6000); }
+  showQueue();
+  if(state.page==="orders") renderOrders();
+}
+// photos taken with the phone's own camera app, picked all at once
+const galleryIn=Object.assign(document.createElement("input"),{type:"file",accept:"image/*",multiple:true,hidden:true});
+document.body.appendChild(galleryIn);
+galleryIn.onchange=async ()=>{
+  const files=[...galleryIn.files]; galleryIn.value="";
+  if(!files.length) return;
+  toast(`${files.length} photo${files.length===1?"":"s"} added, reading them in the background`,"info",4000);
+  ocrReady().catch(()=>{});
+  for(const f of files) await enqueuePhoto(f);   // one upload at a time: phones run out of memory otherwise
+};
+// Photo mode shutter: full-resolution still where the phone allows it, else the video frame
+async function shootPhoto(){
+  const v=$("#scanVideo"), track=scan.stream?.getVideoTracks()[0];
+  if(!track) return;
+  let blob=null;
+  try { if("ImageCapture" in window) blob=await new ImageCapture(track).takePhoto(); } catch {}
+  if(!blob && v.videoWidth) blob=await new Promise(ok=>photoPiece(v,0,0,v.videoWidth,v.videoHeight,1).toBlob(ok,"image/jpeg",.92));
+  if(!blob) return;
+  navigator.vibrate?.(60);
+  v.style.opacity=".3"; setTimeout(()=>{ v.style.opacity=""; },120);   // "shutter" blink
+  enqueuePhoto(blob);
+}
+$("#scanShoot").onclick=shootPhoto;
+
 const photoIn=Object.assign(document.createElement("input"),{type:"file",accept:"image/*",hidden:true});
 photoIn.setAttribute("capture","environment");   // opens the back camera on phones
 document.body.appendChild(photoIn);
@@ -1663,16 +1794,21 @@ async function finishScan(id,partner,found,fromText,fail){
 
 // live camera, no photo needed. From an order card: read its tracking barcode and dispatch it.
 // Scan parcel (no card): read the barcode, then the customer's mobile on the slip to find the order.
-const scan={ id:null, run:null, partner:null, stream:null, timer:null, last:null, awb:null, tryNo:0, texts:[] };
-async function openScanner(id){
+const scan={ id:null, run:null, photos:false, partner:null, stream:null, timer:null, last:null, awb:null, tryNo:0, texts:[] };
+// photos: Photo mode - just a shutter, every photo goes to the background queue
+async function openScanner(id,photos=false){
   const o=id ? po.orders.find(x=>x.id===id) : null, card=id ? $(`#poList .po[data-id="${id}"]`) : null;
   if(id && (!o || !card)) return;
   const run={};   // closing (or reopening) the scanner ends this run
-  Object.assign(scan,{ id, run, partner:card ? $('[data-f="partner"]',card).value : null, last:null, awb:null, tryNo:0, texts:[] });
+  Object.assign(scan,{ id, run, photos, partner:card ? $('[data-f="partner"]',card).value : null, last:null, awb:null, tryNo:0, texts:[] });
   const say=t=>{ $("#scanMsg").textContent=t; };
   say("Starting camera…");
   if(!id) ocrReady().catch(()=>{});   // Scan parcel: text reader loads while the barcode is being found
   $("#scanPick").classList.add("hide");
+  $("#scanShoot").classList.toggle("hide",!photos);
+  $("#scanPhoto").classList.toggle("hide",photos);
+  $("#scanClose").textContent = photos ? "✓ Done" : "✕ Close";
+  $("#scanBox .guide").classList.toggle("hide",photos);   // Photo mode: the whole slip, not just the barcode
   $("#scanBox").classList.remove("hide");
   const v=$("#scanVideo");
   try {
@@ -1684,9 +1820,11 @@ async function openScanner(id){
     stream.getVideoTracks()[0]?.applyConstraints({ advanced:[{ focusMode:"continuous" }] }).catch(()=>{});
   } catch {
     if(scan.run!==run) return;
-    stopCamera(); say("Camera not available here. Use a photo instead.");
+    stopCamera(); say(photos ? "Camera not available here. Use 🖼 Pick photos instead." : "Camera not available here. Use a photo instead.");
+    $("#scanShoot").classList.add("hide");
     return;
   }
+  if(photos){ say(queueText() || "Take a photo of each parcel's slip, one after another"); return; }
   let reader;
   try { reader=await barcodeReader(); }
   catch(e){ stopCamera(); say("Could not start the reader: "+e.message); return; }
@@ -1789,6 +1927,8 @@ $("#poList").addEventListener("keydown", e=>{
 });
 $("#poList").addEventListener("click", async e=>{
   if(e.target.id==="poScanAny"){ openScanner(null); return; }
+  if(e.target.id==="poPhotoMode"){ openScanner(null,true); return; }
+  if(e.target.id==="poGallery"){ galleryIn.click(); return; }
   if(e.target.id==="poPickCancel"){
     if(po.pick.scanId) toast("Kept in 🖼 Courier Photos → Mobile not found","info",5000);
     po.pick=null; $("#poSearch").value=""; renderOrders(); return;

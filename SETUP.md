@@ -101,3 +101,8 @@ the dispatch message; on PC it downloads the photo. **⬇ Download all** saves t
 When a scan cannot find its order (mobile not read, two orders, tracking ID already used), the
 tracking ID + photo are saved in `courier_scans` and listed date-wise in Courier Photos under
 **⚠ Mobile not found** — tap **Match order**, then **✅ Use** on the right order.
+
+**📸 Photo mode / 🖼 Pick photos** (Courier Pending): just take a photo of each slip, or pick photos
+taken with the phone camera. Each is uploaded as a `queued` row in `courier_scans` and read in the
+background one by one (barcode + mobile → dispatch). Photos left unread when the app closes are read
+the next time the same login opens the app.

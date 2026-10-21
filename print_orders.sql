@@ -207,6 +207,14 @@ create table if not exists courier_scans (
 );
 -- sending branch, read off the slip's "From" part (or the scanning login's branch); null = not known yet
 alter table courier_scans add column if not exists branch_id uuid references branches;
+-- Photo mode: photos wait as 'queued' until the app reads them ('processing'), then become
+-- 'done' (dispatched) or 'unmatched' (shown in the list); no barcode read = no tracking ID yet
+alter table courier_scans alter column tracking_id drop not null;
+alter table courier_scans alter column courier_partner drop not null;
+alter table courier_scans add column if not exists state text not null default 'unmatched'
+  check (state in ('queued','processing','unmatched','done'));
+alter table courier_scans add column if not exists claimed_at timestamptz;
+create index if not exists courier_scans_queue_idx on courier_scans (created_by, state) where state in ('queued','processing');
 create index if not exists courier_scans_open_idx on courier_scans (created_at) where resolved_order_id is null;
 alter table courier_scans enable row level security;
 -- branch staff see their branch's scans and the ones with no branch yet; printing / packing see all
