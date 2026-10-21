@@ -61,7 +61,7 @@
     .app { max-width:1080px; margin:0; padding:1.5rem 2rem 2rem calc(var(--nav-w) + 3rem); }
     #dashBody .grid2, #reportBody .grid2 { grid-template-columns:repeat(4,1fr); gap:1rem; }
     .card { padding:1.25rem; }
-    #toast { left:auto; right:2rem; transform:none; bottom:2rem; }
+    #toast { left:auto; right:2rem; transform:none; bottom:6.5rem; }
   }
   table { width:100%; border-collapse:collapse; font-size:.85rem; }
   th,td { text-align:left; padding:.5rem .4rem; border-bottom:1px solid var(--line); white-space:nowrap; }
@@ -104,7 +104,7 @@
   .chips button { background:#fff; border:1px solid var(--line); border-radius:999px; padding:.35rem .7rem; font-size:.8rem; color:var(--text); }
   .chips button.on { background:var(--primary); color:#fff; border-color:var(--primary); }
   .big { font-size:2rem; font-weight:700; }
-  #toast { position:fixed; left:50%; bottom:80px; transform:translateX(-50%); z-index:50; display:flex; flex-direction:column; gap:.4rem; width:92%; max-width:520px; }
+  #toast { position:fixed; left:50%; bottom:calc(152px + env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:50; display:flex; flex-direction:column; gap:.4rem; width:92%; max-width:520px; }
   .toast { padding:.7rem .9rem; border-radius:10px; color:#fff; font-size:.88rem; box-shadow:0 6px 20px rgba(0,0,0,.15); }
   .toast.ok { background:var(--ok); } .toast.bad { background:var(--danger); } .toast.info { background:#334155; }
   .center { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:1rem; }
@@ -112,6 +112,12 @@
   @keyframes sp { to { transform:rotate(360deg); } }
   .loading { text-align:center; color:var(--muted); padding:1.5rem; }
   .hide { display:none !important; }
+  /* round + in the bottom corner (Photo mode), above the phone's bottom tabs */
+  #fab { position:fixed; right:16px; bottom:calc(84px + env(safe-area-inset-bottom)); z-index:30; width:60px; height:60px;
+    border-radius:50%; border:none; background:var(--primary); color:#fff; font-size:2.2rem; line-height:1; padding:0;
+    box-shadow:0 6px 16px rgba(37,99,235,.45); cursor:pointer; }
+  #fab:active { background:var(--primary-d); transform:scale(.95); }
+  @media (min-width:900px){ #fab { right:2rem; bottom:2rem; } }   /* PC: no bottom tabs */
   .phgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.6rem; }
   .ph { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; display:flex; flex-direction:column; }
   .ph img { width:100%; aspect-ratio:3/4; object-fit:cover; background:#f3f4f6; cursor:zoom-in; display:block; }
@@ -187,6 +193,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
 <div id="toast"></div>
+<button id="fab" class="hide" title="Photo mode: take slip photos" aria-label="Photo mode">+</button>
 <div id="scanBox" class="hide">
   <video id="scanVideo" playsinline muted autoplay></video>
   <div class="guide"></div>
@@ -194,6 +201,7 @@
     <div id="scanMsg"></div>
     <button class="btn hide" id="scanShoot" style="font-size:1.1rem;padding:1rem;">📸 Take photo</button>
     <button class="btn sec hide" id="scanPick">Pick the order myself</button>
+    <button class="btn sec hide" id="scanGallery">🖼 Pick photos from gallery</button>
     <button class="btn sec" id="scanPhoto">🖼 Use a photo instead</button>
     <button class="btn" id="scanClose" style="background:#444;">✕ Close</button>
   </div>
@@ -494,6 +502,7 @@ function go(page){
   state.page=page;
   $$("#tabs > button").forEach(b=>b.classList.toggle("on", b.dataset.go===page));
   $("#poSubnav").classList.toggle("hide", page!=="orders");
+  $("#fab").classList.toggle("hide", page!=="orders");
   $$("section[data-page]").forEach(s=>s.classList.toggle("hide", s.dataset.page!==page));
   if(page==="dash") loadDash();
   if(page==="products") loadProducts();
@@ -1123,10 +1132,7 @@ function renderOrderList(){
     const qt=queueText();
     const quick = l.length||po.pick||qt ? `<div class="card" style="padding:.7rem;">
         <button class="btn" id="poScanAny" style="margin-bottom:.6rem;">📷 Scan parcel: finds the order &amp; dispatches</button>
-        <div class="grid2" style="margin-bottom:.4rem;">
-          <button class="btn sec" id="poPhotoMode">📸 Photo mode</button>
-          <button class="btn sec" id="poGallery">🖼 Pick photos</button></div>
-        <div class="muted" style="font-size:.8rem;margin-bottom:.6rem;">Just take a photo of each slip (or pick them from the gallery): they are read in the background and dispatched on their own.</div>
+        <div class="muted" style="font-size:.8rem;margin-bottom:.6rem;">Or tap <b>+</b> at the bottom: just take a photo of each slip (or pick them from the gallery), they are read in the background and dispatched on their own.</div>
         <div id="poQueue" class="${qt?"":"hide"}" style="font-weight:600;font-size:.88rem;margin-bottom:.6rem;">${qt}</div>
         <div class="muted" style="font-size:.82rem;margin-bottom:.4rem;">Or type each tracking ID and press Enter to jump to the next one, then save all.</div>
         <button class="btn sec" id="poSaveAll">Save all filled</button></div>` : "";
@@ -1813,6 +1819,9 @@ async function shootPhoto(){
   enqueuePhoto(blob);
 }
 $("#scanShoot").onclick=shootPhoto;
+$("#scanGallery").onclick=()=>{ closeScanner(); galleryIn.click(); };
+// the round + at the bottom corner opens Photo mode
+$("#fab").onclick=()=>openScanner(null,true);
 
 const photoIn=Object.assign(document.createElement("input"),{type:"file",accept:"image/*",hidden:true});
 photoIn.setAttribute("capture","environment");   // opens the back camera on phones
@@ -1874,6 +1883,7 @@ async function openScanner(id,photos=false){
   $("#scanPick").classList.add("hide");
   $("#scanShoot").classList.toggle("hide",!photos);
   $("#scanPhoto").classList.toggle("hide",photos);
+  $("#scanGallery").classList.toggle("hide",!photos);
   $("#scanClose").textContent = photos ? "✓ Done" : "✕ Close";
   $("#scanBox .guide").classList.toggle("hide",photos);   // Photo mode: the whole slip, not just the barcode
   $("#scanBox").classList.remove("hide");
@@ -1994,8 +2004,6 @@ $("#poList").addEventListener("keydown", e=>{
 });
 $("#poList").addEventListener("click", async e=>{
   if(e.target.id==="poScanAny"){ openScanner(null); return; }
-  if(e.target.id==="poPhotoMode"){ openScanner(null,true); return; }
-  if(e.target.id==="poGallery"){ galleryIn.click(); return; }
   if(e.target.id==="poPickCancel"){
     if(po.pick.scanId) toast("Kept in 🖼 Courier Photos → Mobile not found","info",5000);
     po.pick=null; $("#poSearch").value=""; renderOrders(); return;
