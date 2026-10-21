@@ -103,6 +103,20 @@
   @keyframes sp { to { transform:rotate(360deg); } }
   .loading { text-align:center; color:var(--muted); padding:1.5rem; }
   .hide { display:none !important; }
+  .phgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.6rem; }
+  .ph { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; display:flex; flex-direction:column; }
+  .ph img { width:100%; aspect-ratio:3/4; object-fit:cover; background:#f3f4f6; cursor:zoom-in; display:block; }
+  .ph .info { padding:.45rem .55rem; font-size:.8rem; display:grid; gap:.2rem; flex:1; align-content:start; }
+  .ph .info .pill { justify-self:start; }
+  .ph .info .muted { display:-webkit-box; -webkit-line-clamp:2; line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .ph .acts { display:flex; gap:.3rem; padding:0 .55rem .55rem; }
+  .ph .acts .btn:first-child { flex:1; }
+  #scanBox { position:fixed; inset:0; z-index:60; background:#000; display:flex; flex-direction:column; }
+  #scanBox video { flex:1; min-height:0; width:100%; object-fit:cover; }
+  #scanBox .guide { position:absolute; left:15%; right:15%; top:25%; bottom:35%; border:3px solid #fff; border-radius:14px;
+    box-shadow:0 0 0 100vmax rgba(0,0,0,.35); pointer-events:none; }
+  #scanBox .bar { position:relative; z-index:1; padding:.8rem 1rem calc(.8rem + env(safe-area-inset-bottom)); background:#111; color:#fff; display:grid; gap:.5rem; }
+  #scanMsg { text-align:center; font-size:.95rem; }
 
   /* print orders */
   textarea { font:inherit; width:100%; padding:.6rem .7rem; border:1px solid var(--line); border-radius:10px;
@@ -162,6 +176,16 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
 <div id="toast"></div>
+<div id="scanBox" class="hide">
+  <video id="scanVideo" playsinline muted autoplay></video>
+  <div class="guide"></div>
+  <div class="bar">
+    <div id="scanMsg"></div>
+    <button class="btn sec hide" id="scanPick">Pick the order myself</button>
+    <button class="btn sec" id="scanPhoto">🖼 Use a photo instead</button>
+    <button class="btn" id="scanClose" style="background:#444;">✕ Close</button>
+  </div>
+</div>
 
 <!-- LOGIN -->
 <div id="loginView" class="center hide">
@@ -326,6 +350,16 @@
           <button class="btn" id="poRRun">Run report</button>
         </div>
         <div id="poRBody"></div>
+      </div>
+      <div id="poPhotos" class="hide">
+        <div class="card" style="padding:.7rem;">
+          <div class="grid2">
+            <div><label>Dispatch date</label><input id="poPhDate" type="date" /></div>
+            <div id="poPhBranchWrap"><label>Branch</label><select id="poPhBranch"><option value="all">All</option></select></div>
+          </div>
+          <div class="muted" style="font-size:.8rem;margin-top:.4rem;">Courier slip photos are kept for 15 days. Send them to customers from here.</div>
+        </div>
+        <div id="poPhBody"></div>
       </div>
       <div id="poListWrap" class="hide">
         <div class="card" style="padding:.7rem;display:flex;gap:.5rem;">
@@ -903,7 +937,7 @@ function downloadCSV(name,rows){
 const PO_PARTNERS = { anjani:"Shree Anjani Courier Services (P) Ltd.", delhivery:"Delhivery", post:"Post", other:"Other" };
 const PO_STATUS = { pending:"Pending", courier_pending:"Courier Pending", dispatched:"Dispatched", cancelled:"Cancelled" };
 const DAY_MS = 864e5;
-const po = { orders:[], loaded:false, tab:null, editId:null, names:{}, searchTimer:null };
+const po = { orders:[], loaded:false, tab:null, editId:null, names:{}, searchTimer:null, scanId:null, scanning:null, pick:null, slips:{}, photoRows:{}, photoFiles:{}, unmatched:[], scanUrls:{} };
 
 const branchName = id => state.branches.find(b=>b.id===id)?.name || "—";
 const branchPill = id => `<span class="pill ${branchCode(id)==="UVINVITE"?"br-u":"br-d"}">${esc(branchName(id))}</span>`;
@@ -936,7 +970,8 @@ async function loadOrders(){
   const since=isoLocal(new Date(Date.now()-60*DAY_MS));
   const [{ data, error }, { data:profs }] = await Promise.all([
     fetchAll(()=>sb.from("print_orders").select("*").or(`status.in.(pending,courier_pending),created_at.gte.${since}`).order("created_at").order("id")),
-    sb.from("profiles").select("id,display_name")
+    sb.from("profiles").select("id,display_name"),
+    loadUnmatched()
   ]);
   if(error){
     $("#poList").innerHTML=`<div class="card err">${esc(error.message)}<br>Run print_orders.sql in Supabase (see SETUP.md).</div>`;
@@ -949,6 +984,7 @@ async function loadOrders(){
 function initOrders(){
   po.tab = role()==="branch" ? "new" : role()==="packing" ? "courier" : "pending";
   loadOrders().then(renderOrders);
+  cleanSlips().catch(()=>{});   // bucket missing (SQL not run yet) etc: photos just stay a bit longer
   sb.channel("print_orders").on("postgres_changes",{event:"*",schema:"public",table:"print_orders"}, p=>{
     if(!po.loaded || !p.new?.id) return;
     const isNew = p.eventType==="INSERT" && !po.orders.some(o=>o.id===p.new.id);
@@ -986,7 +1022,8 @@ function renderOrders(){
 
   const tabs=[...(role()==="branch"?[["new","+ New Entry",0]]:[]),
     ["pending","Pending",pend.length],["courier","Courier Pending",cp.length],
-    ["dispatched","Dispatched",0],["cancelled","Cancelled",0],["all","All / Search",0],["report","📊 Report",0]];
+    ["dispatched","Dispatched",0],["cancelled","Cancelled",0],["all","All / Search",0],
+    ["photos","🖼 Courier Photos",0],["report","📊 Report",0]];
   // same options as chips (phone) and as a sub-menu under Orders in the sidebar (PC)
   const tabHtml=tabs.map(([k,l,n])=>
     `<button data-tab="${k}" class="${po.tab===k?"on":""}">${l}${n?`<span class="badge">${n}</span>`:""}</button>`).join("");
@@ -994,9 +1031,11 @@ function renderOrders(){
   $("#poSubnav").innerHTML=tabHtml;
 
   $("#poNew").classList.toggle("hide",po.tab!=="new");
-  $("#poListWrap").classList.toggle("hide",po.tab==="new"||po.tab==="report");
+  $("#poListWrap").classList.toggle("hide",["new","report","photos"].includes(po.tab));
   $("#poReport").classList.toggle("hide",po.tab!=="report");
+  $("#poPhotos").classList.toggle("hide",po.tab!=="photos");
   if(po.tab==="report"){ if(!po.reportRan) runOrderReport(); return; }
+  if(po.tab==="photos"){ if(!po.photosRan) runSlipPhotos(); return; }
   $("#poStatus").classList.toggle("hide",po.tab!=="all");
   if(po.tab==="new"){
     $("#poBranchBox").innerHTML = state.branch ? `Branch (from your login): <b>${esc(state.branch.name)}</b>`
@@ -1043,10 +1082,18 @@ function renderOrderList(){
     html=cards(l)||`<div class="card muted">Nothing pending for printing 🎉</div>`;
   } else if(po.tab==="courier"){
     const l=list.filter(o=>o.status==="courier_pending").sort(by("printed_at"));
-    const quick = l.length ?`<div class="card" style="padding:.7rem;">
-        <div class="muted" style="font-size:.82rem;margin-bottom:.4rem;">Quick entry: type each tracking ID and press Enter to jump to the next one, then save all.</div>
-        <button class="btn" id="poSaveAll">Save all filled</button></div>` : "";
-    html=`${quick}${cards(l)||`<div class="card muted">No parcels waiting</div>`}`;
+    const pick = po.pick ? `<div class="card" style="padding:.7rem;border:2px solid var(--primary);">
+        ${esc(po.pick.why)} Scanned <b>${esc(po.pick.awb)}</b> (${esc(PO_PARTNERS[po.pick.partner])}).
+        Tap <b>✅ Use</b> on the right order. <button class="btn sec sm" id="poPickCancel">Cancel</button></div>` : "";
+    const nUm=po.unmatched.length;
+    const unmatched = nUm && !po.pick ? `<div class="card" style="padding:.7rem;border:2px solid #f59e0b;">
+        ⚠ <b>${nUm}</b> scanned parcel${nUm===1?"":"s"}: order not found yet.
+        <button class="btn sec sm" id="poUnmatchedGo">Open list</button></div>` : "";
+    const quick = l.length||po.pick ? `<div class="card" style="padding:.7rem;">
+        <button class="btn" id="poScanAny" style="margin-bottom:.6rem;">📷 Scan parcel: finds the order &amp; dispatches</button>
+        <div class="muted" style="font-size:.82rem;margin-bottom:.4rem;">Or type each tracking ID and press Enter to jump to the next one, then save all.</div>
+        <button class="btn sec" id="poSaveAll">Save all filled</button></div>` : "";
+    html=`${pick}${unmatched}${quick}${cards(l)||`<div class="card muted">No parcels waiting</div>`}`;
   } else if(po.tab==="dispatched"){
     const l=rankSort(list.filter(o=>o.status==="dispatched"),q,by("dispatched_at",-1));
     html=cards(l)||`<div class="card muted">Nothing dispatched yet</div>`;
@@ -1091,6 +1138,9 @@ function poCard(o){
       <input data-f="tracking" placeholder="Tracking ID (Anjani: 10 digits)" autocomplete="off" value="${esc(o.tracking_id||"")}" />
       <input data-f="other" class="hide" placeholder="Partner name" style="grid-column:1/-1" value="${esc(o.courier_other||"")}" />
     </div><div class="err" data-err></div>`;
+    if(po.pick) acts.push(`<button class="btn" data-act="usepick">✅ Use ${esc(po.pick.awb)}</button>`);
+    acts.push(po.scanning===o.id ?`<button class="btn sec" disabled>⏳ Reading photo…</button>`
+      : `<button class="btn sec" data-act="scan">📷 Scan sticker &amp; dispatch</button>`);
     acts.push(`<button class="btn" data-act="dispatch">🚚 Save / Dispatch</button>`);
     if(r==="printing") acts.push(`<button class="btn sec sm" data-act="unprint">↩ Undo Print Done</button>`);
   }
@@ -1099,6 +1149,7 @@ function poCard(o){
       ${trackUrl(o)?` · <a href="${esc(trackUrl(o))}" target="_blank" rel="noopener">Track ↗</a>`:""}</div>`;
     acts.push(`<button class="btn sm" data-act="copy">📋 Copy details</button>`);
     acts.push(`<a class="btn sec sm" style="text-decoration:none;" target="_blank" rel="noopener" href="https://wa.me/91${o.mobile}?text=${encodeURIComponent(courierText(o))}">WhatsApp</a>`);
+    if(slipKept(o)) acts.push(`<button class="btn sec sm" data-act="slip">🖼 Slip photo</button>`);
     acts.push(`<button class="btn sec sm" data-act="undispatch">↩ Undo Dispatch</button>`);
   }
   if(o.status==="cancelled"){
@@ -1176,6 +1227,467 @@ function courierPatch(card){
   return { status:"dispatched", courier_partner:partner, courier_other:partner==="other"?other:null, tracking_id:tracking };
 }
 
+/* ---- Courier slip photo -> tracking ID -> dispatch ---- */
+// libraries load only the first time someone scans
+const ZXING_SRC="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js";
+const TESS_SRC="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+const libs={};
+function loadScript(src){
+  return libs[src] ||= new Promise((ok,bad)=>{
+    const s=document.createElement("script"); s.src=src; s.onload=ok;
+    s.onerror=()=>{ delete libs[src]; bad(new Error("could not load the reader, check internet")); };
+    document.head.appendChild(s);
+  });
+}
+// tracking ID shape per courier
+const AWB_RE = { anjani:/^\d{10}$/, delhivery:/^\d{10,15}$/, post:/^[A-Z]{2}\d{9}IN$/, other:/^(?=.*\d{4})[A-Z0-9]{6,20}$/ };
+const SCAN_PARTNERS = ["anjani","post","delhivery"];   // Anjani first: its 10 digits also fit the Delhivery shape
+// o: the order being scanned, whose mobile is printed on the slip too
+// fromText: numbers read off the printed text, where mobiles (customer, ours, courier office) are everywhere
+function awbCandidates(values,partner,o,fromText=false){
+  const re=AWB_RE[partner]||AWB_RE.other, out=new Set();
+  for(const v of values){
+    const s=String(v).toUpperCase();
+    for(const t of [s.replace(/[\s-]/g,""), ...s.split(/[^A-Z0-9]+/)]){
+      if(!re.test(t) || (o && t.endsWith(o.mobile))) continue;
+      if(fromText && /^[6-9]\d{9}$/.test(t)) continue;
+      out.add(t);
+    }
+  }
+  return [...out];
+}
+// partner known (scanning from an order card) or guessed from the ID's shape (Scan parcel)
+function awbHits(values,partner,o){
+  for(const p of partner ? [partner] : SCAN_PARTNERS){
+    const hits=awbCandidates(values,p,o);
+    if(hits.length) return { hits, partner:p };
+  }
+  return null;
+}
+async function photoCanvas(file,max){
+  const img=await createImageBitmap(file);
+  const k=Math.min(1,max/Math.max(img.width,img.height));
+  const c=document.createElement("canvas");
+  c.width=Math.round(img.width*k); c.height=Math.round(img.height*k);
+  c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+  return c;
+}
+// part of a photo / video frame, enlarged k times and turned q quarter-turns clockwise
+function photoPiece(src,x,y,w,h,k,q=0){
+  const cw=Math.round(w*k), ch=Math.round(h*k), c=document.createElement("canvas");
+  c.width=q%2?ch:cw; c.height=q%2?cw:ch;
+  const g=c.getContext("2d"); g.imageSmoothingQuality="high";
+  g.translate(c.width/2,c.height/2); g.rotate(q*Math.PI/2);
+  g.drawImage(src,x,y,w,h,-cw/2,-ch/2,cw,ch);
+  return c;
+}
+// quarter-turns that make a barcode (and the slip text printed the same way) upright
+function uprightTurns(p){
+  if(!p?.length) return 0;
+  return ((-Math.round(Math.atan2(p[1].y-p[0].y,p[1].x-p[0].x)/(Math.PI/2)))%4+4)%4;
+}
+const turnOf = (got,hit) => got.find(g=>String(g.v).toUpperCase().replace(/[\s-]/g,"").includes(hit))?.q || 0;
+let nativeReader;   // built into Chrome on Android: any angle, every barcode at once
+async function barcodeReader(){
+  if(nativeReader===undefined){
+    nativeReader=null;
+    try { if("BarcodeDetector" in window && (await BarcodeDetector.getSupportedFormats()).length) nativeReader=new BarcodeDetector(); } catch {}
+  }
+  if(nativeReader) return { turns:[0],
+    read:async c=>(await nativeReader.detect(c)).map(b=>({ v:b.rawValue, q:uprightTurns(b.cornerPoints) })) };
+  // ZXing reads bars left-to-right only, so pieces are also tried turned
+  await loadScript(ZXING_SRC);
+  const r=new ZXing.MultiFormatReader();
+  r.setHints(new Map([[ZXing.DecodeHintType.TRY_HARDER,true]]));
+  return { turns:[0,1], read:async c=>{
+    try { return [{ v:r.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(c)))).getText(), q:0 }]; }
+    catch { return []; }
+  }};
+}
+// the courier sticker is small in a photo of the whole parcel: try the full photo, then
+// smaller and smaller overlapping pieces, each enlarged, until accept() likes a barcode
+async function scanBarcodes(src,accept){
+  const { turns, read } = await barcodeReader();
+  const W=src.width, H=src.height;
+  for(const F of [1,3,4,5]){
+    const tw=W/F, th=H/F;
+    for(let y=0; y<H-th/2; y+=th/2) for(let x=0; x<W-tw/2; x+=tw/2){
+      const w=Math.min(tw,W-x), h=Math.min(th,H-y), k=F===1?1:1000/Math.max(w,h);
+      for(const t of turns){
+        const got=await read(photoPiece(src,x,y,w,h,k,t)), r=accept(got.map(g=>g.v));
+        if(r) return { ...r, q:(t+turnOf(got,r.hits[0]))%4 };
+      }
+      await new Promise(r=>setTimeout(r));   // let the page breathe between pieces
+    }
+  }
+  return null;
+}
+let ocrWorker;   // one text reader, kept for the next scan
+async function ocrText(canvas){
+  await loadScript(TESS_SRC);
+  ocrWorker ||= Tesseract.createWorker("eng").catch(e=>{ ocrWorker=null; throw e; });
+  return (await (await ocrWorker).recognize(canvas)).data.text;
+}
+// 10-digit numbers on the slip, also when printed in groups ("88499 77965") or with +91
+function slipMobiles(text){
+  const out=new Set();
+  for(const line of text.split("\n"))
+    for(const m of line.replace(/(\d)\s+(?=\d)/g,"$1").match(/\d{10,}/g)||[]) out.add(m.slice(-10));
+  return out;
+}
+// read the slip at the likely angles (q = how the barcode was turned) until a printed
+// mobile matches an order waiting for the courier
+async function findOrdersOnSlip(src,q,tries=[0,2,1,3]){
+  const W=src.width, H=src.height, k=Math.min(1,1600/Math.max(W,H));
+  for(const d of tries){
+    const mobs=slipMobiles(await ocrText(photoPiece(src,0,0,W,H,k,(q+d)%4)));
+    const m=ofStatus("courier_pending").filter(o=>mobs.has(o.mobile));
+    if(m.length) return m;
+  }
+  return [];
+}
+/* ---- Slip photos: a small copy kept SLIP_DAYS in the "slips" storage bucket ---- */
+const SLIP_DAYS=15;
+// whole photo / frame, turned upright, max 1280px
+function slipShot(src,q=0){ const W=src.width, H=src.height; return photoPiece(src,0,0,W,H,Math.min(1,1280/Math.max(W,H)),q); }
+// WebP where the browser can make it (~100 KB), else JPEG
+async function slipBlob(c){
+  const make=(type,quality)=>new Promise(ok=>c.toBlob(ok,type,quality));
+  const b=await make("image/webp",.6);
+  return b?.type==="image/webp" ? b : make("image/jpeg",.7);
+}
+// one folder per day, so old days are removed as a whole
+async function uploadSlip(name,shot){
+  const blob=await slipBlob(shot);
+  const path=`${todayISO()}/${name}-${Date.now()}.${blob.type==="image/webp"?"webp":"jpg"}`;
+  const { error } = await sb.storage.from("slips").upload(path,blob,{ contentType:blob.type });
+  if(error) throw error;
+  return path;
+}
+// upload the slip photo scanned for this order (if any) and put its path on the dispatch patch
+async function withSlip(id,patch){
+  const shot=po.slips[id]; if(!shot) return patch;
+  try { patch.slip_path=await uploadSlip(id,shot); delete po.slips[id]; }
+  catch(e){ toast("Slip photo not saved: "+e.message,"bad",5000); }
+  return patch;
+}
+// whoever opens the app clears day-folders older than SLIP_DAYS (keeps the free 1 GB plenty)
+async function cleanSlips(){
+  const cut=isoLocal(new Date(Date.now()-SLIP_DAYS*DAY_MS)), bucket=sb.storage.from("slips");
+  const { data:days } = await bucket.list("",{ limit:1000 });
+  for(const d of days||[]){
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d.name) || d.name>=cut) continue;
+    const { data:files } = await bucket.list(d.name,{ limit:1000 });
+    if(files?.length) await bucket.remove(files.map(f=>`${d.name}/${f.name}`));
+  }
+}
+const slipKept = o => o.slip_path && Date.now()-new Date(o.dispatched_at) < SLIP_DAYS*DAY_MS;
+
+/* ---- Scanned parcels whose order was not found: the "Mobile not found" list ---- */
+async function loadUnmatched(){
+  const { data, error } = await sb.from("courier_scans").select("*").is("resolved_order_id",null)
+    .gte("created_at",new Date(Date.now()-SLIP_DAYS*DAY_MS).toISOString()).order("created_at");
+  po.unmatched = error ? [] : data||[];   // table missing until print_orders.sql is re-run
+}
+async function saveScan(awb,partner,shot,why){
+  let slip_path=null;
+  if(shot){ try { slip_path=await uploadSlip("scan",shot); } catch(e){ toast("Slip photo not saved: "+e.message,"bad",5000); } }
+  const { data, error } = await sb.from("courier_scans")
+    .insert({ tracking_id:awb, courier_partner:partner, slip_path, reason:why }).select().single();
+  if(error){ toast("Could not keep the scan in the list: "+error.message,"bad",5000); return { id:null, slip_path }; }
+  po.unmatched.push(data);
+  return data;
+}
+async function resolveScan(scanId,orderId){
+  po.unmatched=po.unmatched.filter(s=>s.id!==scanId);
+  await sb.from("courier_scans").update({ resolved_order_id:orderId, resolved_at:new Date().toISOString() }).eq("id",scanId);
+}
+
+/* ---- Courier Photos tab: slip photos by dispatch date, to send to customers ---- */
+// branch logins only get their own branch's orders (RLS), so only their photos
+async function runSlipPhotos(){
+  po.photosRan=true;
+  const run = po.photosRun = (po.photosRun||0)+1;   // only the latest change may draw
+  const dIn=$("#poPhDate"), bsel=$("#poPhBranch"), body=$("#poPhBody");
+  dIn.max=todayISO(); dIn.min=isoLocal(new Date(Date.now()-SLIP_DAYS*DAY_MS));
+  if(!dIn.value) dIn.value=todayISO();
+  if(bsel.options.length===1) state.branches.forEach(b=>bsel.add(new Option(b.name,b.id)));
+  $("#poPhBranchWrap").classList.toggle("hide",role()==="branch");
+  body.innerHTML='<div class="loading"><span class="spin"></span> Loading…</div>';
+  const d=dIn.value;
+  let q=sb.from("print_orders").select("*").eq("status","dispatched").not("slip_path","is",null)
+    .gte("dispatched_at",`${d}T00:00:00+05:30`).lte("dispatched_at",`${d}T23:59:59.999+05:30`)   // IST day
+    .order("dispatched_at");
+  if(bsel.value!=="all" && role()!=="branch") q=q.eq("branch_id",bsel.value);
+  const [{ data, error }] = await Promise.all([q, loadUnmatched()]);
+  if(run!==po.photosRun) return;
+  if(error){ body.innerHTML=`<div class="card err">${esc(error.message)}</div>`; return; }
+  const rows=data||[];
+  // scans whose order was not found: this day's cards, plus a jump to other days that have some
+  const dayOf=s=>isoLocal(new Date(s.created_at));
+  const scans=po.unmatched.filter(s=>dayOf(s)===d);
+  const otherDays={}; po.unmatched.forEach(s=>{ if(dayOf(s)!==d) otherDays[dayOf(s)]=(otherDays[dayOf(s)]||0)+1; });
+  const paths=[...rows.map(o=>o.slip_path), ...scans.map(s=>s.slip_path).filter(Boolean)];
+  const urls={};
+  if(paths.length){
+    const { data:signed } = await sb.storage.from("slips").createSignedUrls(paths,3600);
+    if(run!==po.photosRun) return;
+    (signed||[]).forEach((x,i)=>{ if(x?.signedUrl) urls[paths[i]]=x.signedUrl; });
+  }
+  po.photoRows=Object.fromEntries(rows.map(o=>[o.id,{ o, url:urls[o.slip_path]||"" }]));
+  po.scanUrls=Object.fromEntries(scans.map(s=>[s.id,urls[s.slip_path]||""]));
+  po.photoFiles={};
+  const img=(u,alt)=>u ? `<img src="${esc(u)}" loading="lazy" alt="${esc(alt)}" data-ph="open">`
+    : `<div class="muted" style="padding:2rem .5rem;text-align:center;">Photo removed</div>`;
+  const days=Object.keys(otherDays).sort().reverse();
+  body.innerHTML=`
+    ${days.length ? `<div class="card" style="padding:.6rem .7rem;font-size:.85rem;">⚠ Mobile not found on other days:
+      <div class="chips" style="margin-top:.4rem;">${days.map(k=>`<button data-day="${k}">${ddmmyyyy(k)} (${otherDays[k]})</button>`).join("")}</div></div>` : ""}
+    ${scans.length ? `<div class="card" style="padding:.6rem .7rem;border:2px solid #f59e0b;">
+        <b>⚠ Mobile not found · ${scans.length}</b>
+        <div class="muted" style="font-size:.8rem;">The order was not found when these were scanned. Tap <b>Match order</b> and pick the right order.</div></div>
+      <div class="phgrid" style="margin-bottom:.9rem;">${scans.map(s=>{
+        const used=po.orders.find(o=>o.tracking_id===s.tracking_id);
+        return `<div class="ph" data-scan="${s.id}">${img(po.scanUrls[s.id],"Slip "+s.tracking_id)}
+        <div class="info"><b>🚚 ${esc(s.tracking_id)}</b><span>${esc(PO_PARTNERS[s.courier_partner]||"")} · ${dtIST(s.created_at).split(", ")[1]}</span>
+          <span class="muted">${esc(s.reason||"")}</span>
+          ${used ? `<span style="color:var(--danger);">Already on order ${fmtMobile(used.mobile)}</span>` : ""}</div>
+        <div class="acts"><button class="btn sm" data-ph="match">Match order</button><button class="btn sec sm" data-ph="del" title="Delete">🗑</button></div>
+      </div>`; }).join("")}</div>` : ""}
+    ${rows.length ? `<div class="card" style="padding:.6rem .7rem;display:flex;align-items:center;gap:.5rem;">
+      <b style="flex:1;">${rows.length} photo${rows.length===1?"":"s"} · ${ddmmyyyy(d)}</b>
+      <button class="btn sec sm" id="poPhAll">⬇ Download all</button></div>
+    <div class="phgrid">${rows.map(o=>{ const u=po.photoRows[o.id].url; return `<div class="ph" data-id="${o.id}">
+      ${img(u,"Slip "+o.tracking_id)}
+      <div class="info"><b>📞 ${fmtMobile(o.mobile)}</b>${branchPill(o.branch_id)}
+        <span>${esc(partnerName(o))} · ${esc(o.tracking_id)}</span><span class="muted">${esc(o.details)}</span></div>
+      ${u ? `<div class="acts"><button class="btn sm" data-ph="share">📤 Send</button><button class="btn sec sm" data-ph="dl" title="Download">⬇</button></div>` : ""}
+    </div>`; }).join("")}</div>`
+    : scans.length ? "" : `<div class="card muted">No courier photos for ${ddmmyyyy(d)}</div>`}`;
+}
+// customers get a JPG named after their order (WhatsApp can turn a WebP into a sticker)
+async function slipFile(id){
+  if(po.photoFiles[id]) return po.photoFiles[id];
+  const { o, url } = po.photoRows[id];
+  const img=await createImageBitmap(await (await fetch(url)).blob());
+  const c=document.createElement("canvas"); c.width=img.width; c.height=img.height;
+  c.getContext("2d").drawImage(img,0,0);
+  const jpg=await new Promise(ok=>c.toBlob(ok,"image/jpeg",.85));
+  return po.photoFiles[id]=new File([jpg],`courier-${o.mobile}-${o.tracking_id}.jpg`,{ type:"image/jpeg" });
+}
+function saveFile(file){
+  const a=document.createElement("a"); a.href=URL.createObjectURL(file); a.download=file.name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),10000);
+}
+$("#poPhDate").onchange = $("#poPhBranch").onchange = ()=>runSlipPhotos();
+$("#poPhBody").addEventListener("click", async e=>{
+  if(e.target.id==="poPhAll"){
+    const ids=Object.keys(po.photoRows).filter(id=>po.photoRows[id].url);
+    e.target.disabled=true;
+    for(const id of ids){
+      try { saveFile(await slipFile(id)); } catch {}
+      await new Promise(r=>setTimeout(r,400));   // browsers drop downloads fired all at once
+    }
+    e.target.disabled=false;
+    return;
+  }
+  const day=e.target.closest("[data-day]");
+  if(day){ $("#poPhDate").value=day.dataset.day; runSlipPhotos(); return; }
+  const b=e.target.closest("[data-ph]"); if(!b) return;
+  const sc=b.closest("[data-scan]");
+  if(sc){   // a "Mobile not found" card
+    const s=po.unmatched.find(x=>x.id===sc.dataset.scan); if(!s) return;
+    if(b.dataset.ph==="open" && po.scanUrls[s.id]) window.open(po.scanUrls[s.id],"_blank");
+    if(b.dataset.ph==="match")
+      startPick({ awb:s.tracking_id, partner:s.courier_partner, why:"Match this scanned parcel.", scanId:s.id, slip_path:s.slip_path });
+    if(b.dataset.ph==="del" && confirm(`Delete scanned parcel ${s.tracking_id} from the list?`)){
+      const { error } = await sb.from("courier_scans").delete().eq("id",s.id);
+      if(error){ toast(error.message,"bad"); return; }
+      if(s.slip_path) sb.storage.from("slips").remove([s.slip_path]);
+      po.unmatched=po.unmatched.filter(x=>x.id!==s.id);
+      runSlipPhotos();
+    }
+    return;
+  }
+  const id=b.closest(".ph").dataset.id, row=po.photoRows[id]; if(!row?.url) return;
+  if(b.dataset.ph==="open"){ window.open(row.url,"_blank"); return; }
+  b.disabled=true;
+  try {
+    const file=await slipFile(id);
+    // phone: share sheet (WhatsApp etc.) with the photo + dispatch message; PC: download
+    if(b.dataset.ph==="share" && navigator.canShare?.({ files:[file] })){
+      try { await navigator.share({ files:[file], text:courierText(row.o) }); }
+      catch(err){
+        // the first tap can lose the browser's "user tapped" permission while the photo downloads
+        if(err.name==="NotAllowedError") toast("Photo ready, tap 📤 Send again","info");
+        else if(err.name!=="AbortError") throw err;
+      }
+    } else saveFile(file);
+  } catch(err){ toast("Could not get the photo: "+err.message,"bad",5000); }
+  b.disabled=false;
+});
+
+// Scan parcel result: dispatch the one matching order, otherwise ask which order it is
+async function placeScan(awb,partner,matches,shot){
+  const o=matches.length===1 && matches[0];
+  if(o && !po.orders.some(x=>x.id!==o.id && x.tracking_id===awb)){
+    if(shot) po.slips[o.id]=shot;
+    if(await poUpdate(o.id,await withSlip(o.id,{ status:"dispatched", courier_partner:partner, courier_other:null, tracking_id:awb })))
+      toast(`Dispatched 🚚 ${awb} → ${fmtMobile(o.mobile)} (${branchName(o.branch_id)}) · wrong? use ↩ Undo Dispatch`,"ok",7000);
+    return;
+  }
+  askPick(awb,partner,matches, o ? `${awb} is already on another order.`
+    : matches.length ? "More than one order for this mobile." : "Could not find the customer's mobile on the slip.", shot);
+}
+async function askPick(awb,partner,matches,why,shot){
+  // kept in the "Mobile not found" list right away, so a cancelled or forgotten pick is not lost
+  const s=await saveScan(awb,partner,shot,why);
+  startPick({ awb, partner, why, scanId:s.id, slip_path:s.slip_path }, matches.length ? matches[0].mobile : "");
+}
+function startPick(pick,search=""){
+  po.pick=pick;
+  setOrderTab("courier");
+  $("#poSearch").value=search;
+  renderOrders();
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+async function scanParcelPhoto(file){
+  toast("Reading the photo…","info",3000);
+  try {
+    const photo=await photoCanvas(file,3000);
+    const r=await scanBarcodes(photo, v=>awbHits(v,null,null));
+    if(!r){ toast("No courier barcode found. Take a closer photo of the sticker.","bad",6000); return; }
+    const shot=slipShot(photo,r.q);
+    if(r.hits.length>1){ askPick(r.hits[0],r.partner,[],`More than one number found (${r.hits.join(", ")}). Check it.`,shot); return; }
+    toast(`Tracking ${r.hits[0]} found, finding the order… (first time takes longer)`,"info",5000);
+    placeScan(r.hits[0],r.partner,await findOrdersOnSlip(photo,r.q),shot);
+  } catch(e){ toast("Could not read the photo: "+e.message,"bad",6000); }
+}
+
+const photoIn=Object.assign(document.createElement("input"),{type:"file",accept:"image/*",hidden:true});
+photoIn.setAttribute("capture","environment");   // opens the back camera on phones
+document.body.appendChild(photoIn);
+photoIn.onchange=async ()=>{
+  const file=photoIn.files[0], id=po.scanId; photoIn.value="";
+  if(!file) return;
+  if(!id) return scanParcelPhoto(file);
+  const o=po.orders.find(x=>x.id===id);
+  const card=()=>$(`#poList .po[data-id="${id}"]`);   // re-renders replace the card element
+  if(!o || !card()) return;
+  const partner=$('[data-f="partner"]',card()).value;
+  po.scanning=id; renderOrderList();
+  let found=[], fromText=false, fail="";
+  try {
+    const photo=await photoCanvas(file,3000);
+    const r=await scanBarcodes(photo, v=>awbHits(v,partner,o));
+    found=r?.hits || [];
+    po.slips[id]=slipShot(photo,r?.q||0);   // saved with the dispatch, also when it is pressed by hand
+    if(!found.length){
+      toast("No barcode found, reading the text… (first time takes longer)","info",4000);
+      fromText=true;
+      found=awbCandidates((await ocrText(await photoCanvas(file,2000))).match(/[A-Za-z0-9]+/g)||[],partner,o,true);
+    }
+  } catch(e){ fail="Could not read the photo: "+e.message; }
+  po.scanning=null; renderOrderList();
+  finishScan(id,partner,found,fromText,fail);
+};
+// put the scanned number on the card and dispatch when it is one clear barcode answer
+async function finishScan(id,partner,found,fromText,fail){
+  const c=$(`#poList .po[data-id="${id}"]`);
+  if(!c){ toast(found.length?`Order already moved. Number in photo: ${found[0]}`:"Order already moved","bad",6000); return; }
+  const err=$("[data-err]",c);
+  if(fail){ err.textContent=fail; return; }
+  if(!found.length){ err.textContent=`No ${PO_PARTNERS[partner]||""} tracking ID found in the photo. Take a closer photo of the courier sticker, or type it.`; return; }
+  $('[data-f="tracking"]',c).value=found[0];
+  // dispatch on its own only when a barcode gave one clear answer; text reading can pick the wrong number
+  if(found.length>1){ err.textContent=`More than one number found (${found.join(", ")}). Check it, then press Save / Dispatch.`; return; }
+  if(fromText){ err.textContent=`Read ${found[0]} from the text (no barcode). Check it, then press Save / Dispatch.`; return; }
+  if(po.orders.some(x=>x.id!==id && x.tracking_id===found[0])){
+    err.textContent=`${found[0]} is already on another order. Check it, then press Save / Dispatch.`; return;
+  }
+  const patch=courierPatch(c); if(!patch) return;
+  if(await poUpdate(id,await withSlip(id,patch))) toast(`Dispatched 🚚 ${found[0]} · wrong? use ↩ Undo Dispatch`,"ok",6000);
+}
+
+// live camera, no photo needed. From an order card: read its tracking barcode and dispatch it.
+// Scan parcel (no card): read the barcode, then the customer's mobile on the slip to find the order.
+const scan={ id:null, run:null, partner:null, stream:null, timer:null, last:null, awb:null };
+async function openScanner(id){
+  const o=id ? po.orders.find(x=>x.id===id) : null, card=id ? $(`#poList .po[data-id="${id}"]`) : null;
+  if(id && (!o || !card)) return;
+  const run={};   // closing (or reopening) the scanner ends this run
+  Object.assign(scan,{ id, run, partner:card ? $('[data-f="partner"]',card).value : null, last:null, awb:null });
+  const say=t=>{ $("#scanMsg").textContent=t; };
+  say("Starting camera…");
+  $("#scanPick").classList.add("hide");
+  $("#scanBox").classList.remove("hide");
+  const v=$("#scanVideo");
+  try {
+    const stream=await navigator.mediaDevices.getUserMedia({ audio:false,
+      video:{ facingMode:"environment", width:{ideal:1920}, height:{ideal:1080} } });
+    if(scan.run!==run){ stream.getTracks().forEach(t=>t.stop()); return; }   // closed while the camera was starting
+    scan.stream=stream; v.srcObject=stream; await v.play();
+  } catch {
+    if(scan.run!==run) return;
+    stopCamera(); say("Camera not available here. Use a photo instead.");
+    return;
+  }
+  let reader;
+  try { reader=await barcodeReader(); }
+  catch(e){ stopCamera(); say("Could not start the reader: "+e.message); return; }
+  if(scan.run!==run) return;
+  say(`Hold the ${o ? PO_PARTNERS[scan.partner] : "courier"} barcode inside the box`);
+  const tick=async ()=>{
+    if(scan.run!==run || !scan.stream) return;
+    const vw=v.videoWidth, vh=v.videoHeight;
+    if(vw && !scan.awb){
+      // built-in reader takes the whole frame; ZXing reads the guide box area
+      const [x,y,w,h]=nativeReader ? [0,0,vw,vh] : [vw*.1,vh*.1,vw*.8,vh*.8];
+      const k=nativeReader ? 1 : Math.min(1,1000/Math.max(w,h));
+      let r=null;
+      for(const t of reader.turns){
+        const got=await reader.read(photoPiece(v,x,y,w,h,k,t));
+        if((r=awbHits(got.map(g=>g.v),scan.partner,o))){ r.q=(t+turnOf(got,r.hits[0]))%4; break; }
+      }
+      if(scan.run!==run) return;
+      // same single number on two frames in a row
+      if(r?.hits.length===1){
+        if(scan.last!==r.hits[0]) scan.last=r.hits[0];
+        else if(o){
+          po.slips[id]=slipShot(photoPiece(v,0,0,vw,vh,1),r.q);
+          navigator.vibrate?.(200); closeScanner(); finishScan(id,scan.partner,r.hits,false,""); return;
+        }
+        else {
+          scan.awb=r; navigator.vibrate?.(100);
+          say(`✓ Tracking ${r.hits[0]}. Now show the customer's mobile number (the "To" part of the slip)`);
+          $("#scanPick").classList.remove("hide");
+        }
+      }
+    } else if(vw && scan.awb){
+      const a=scan.awb, frame=photoPiece(v,0,0,vw,vh,1), m=await findOrdersOnSlip(frame,a.q,[0,2]);
+      if(scan.run!==run) return;
+      if(m.length){ navigator.vibrate?.(200); closeScanner(); placeScan(a.hits[0],a.partner,m,slipShot(frame,a.q)); return; }
+    }
+    if(scan.run===run && scan.stream) scan.timer=setTimeout(tick,scan.awb?300:120);
+  };
+  tick();
+}
+function stopCamera(){
+  clearTimeout(scan.timer);
+  scan.stream?.getTracks().forEach(t=>t.stop());
+  scan.stream=null; $("#scanVideo").srcObject=null;
+}
+function closeScanner(){ scan.run=null; stopCamera(); $("#scanBox").classList.add("hide"); }
+$("#scanClose").onclick=closeScanner;
+$("#scanPhoto").onclick=()=>{ po.scanId=scan.id; closeScanner(); photoIn.click(); };
+$("#scanPick").onclick=()=>{
+  const a=scan.awb, v=$("#scanVideo");
+  const shot=v.videoWidth ? slipShot(photoPiece(v,0,0,v.videoWidth,v.videoHeight,1),a.q) : null;   // grab before the camera stops
+  closeScanner(); askPick(a.hits[0],a.partner,[],"Pick the order for this parcel.",shot);
+};
+// free the camera when the phone locks or the app goes to the background
+document.addEventListener("visibilitychange",()=>{ if(document.hidden && scan.stream) closeScanner(); });
+
 $("#poTabs").onclick = $("#poStats").onclick = e=>{
   const b=e.target.closest("[data-tab]"); if(!b) return;
   setOrderTab(b.dataset.tab);
@@ -1186,6 +1698,7 @@ $("#poTabs").onclick = $("#poStats").onclick = e=>{
 function setOrderTab(t){
   if(po.editId && t!=="new") resetOrderForm();
   if(t==="report") po.reportRan=false;   // fresh numbers every time the report is opened
+  if(t==="photos") po.photosRan=false;
   po.tab=t;
 }
 $("#poStatus").onchange = ()=>{ if(po.loaded) renderOrderList(); };
@@ -1213,13 +1726,22 @@ $("#poList").addEventListener("keydown", e=>{
   (all[i+1]||$("#poSaveAll"))?.focus();
 });
 $("#poList").addEventListener("click", async e=>{
+  if(e.target.id==="poScanAny"){ openScanner(null); return; }
+  if(e.target.id==="poPickCancel"){
+    if(po.pick.scanId) toast("Kept in 🖼 Courier Photos → Mobile not found","info",5000);
+    po.pick=null; $("#poSearch").value=""; renderOrders(); return;
+  }
+  if(e.target.id==="poUnmatchedGo"){
+    $("#poPhDate").value=isoLocal(new Date(po.unmatched.at(-1).created_at));   // latest day with one
+    setOrderTab("photos"); renderOrders(); return;
+  }
   if(e.target.id==="poSaveAll"){
     const cards=$$("#poList .po").filter(c=>$('[data-f="tracking"]',c)?.value.trim());
     if(!cards.length){ toast("No tracking IDs filled","bad"); return; }
     const jobs=cards.map(c=>[c.dataset.id,courierPatch(c)]).filter(([,patch])=>patch);
     e.target.disabled=true;
     let ok=0;
-    for(const [id,patch] of jobs) if(await poUpdate(id,patch,false)) ok++;
+    for(const [id,patch] of jobs) if(await poUpdate(id,await withSlip(id,patch),false)) ok++;
     e.target.disabled=false;
     renderOrders();
     // re-render cleared the messages: show them again on the cards that still need fixing
@@ -1230,13 +1752,32 @@ $("#poList").addEventListener("click", async e=>{
   const b=e.target.closest("[data-act]"); if(!b) return;
   const card=b.closest(".po"), id=card.dataset.id, o=po.orders.find(x=>x.id===id); if(!o) return;
   const act=b.dataset.act;
+  if(act==="scan") openScanner(id);
+  if(act==="usepick" && po.pick){
+    const { awb, partner, scanId, slip_path } = po.pick;
+    b.disabled=true;
+    const patch={ status:"dispatched", courier_partner:partner, courier_other:null, tracking_id:awb };
+    if(slip_path) patch.slip_path=slip_path;   // photo was uploaded with the scan
+    if(await poUpdate(id,patch,false)){
+      if(scanId) await resolveScan(scanId,id);
+      po.pick=null; $("#poSearch").value="";
+      toast(`Dispatched 🚚 ${awb} → ${fmtMobile(o.mobile)}`,"ok",6000);
+    }
+    renderOrders();
+  }
   if(act==="print"){ b.disabled=true; if(await poUpdate(id,{status:"courier_pending"})) toast("Print done ✓","ok"); else b.disabled=false; }
   if(act==="unprint" && confirm("Move this order back to Pending (print not done)?")) poUpdate(id,{status:"pending"});
   if(act==="dispatch"){
     const patch=courierPatch(card); if(!patch) return;
-    b.disabled=true; if(await poUpdate(id,patch)) toast("Dispatched 🚚","ok"); else b.disabled=false;
+    b.disabled=true; if(await poUpdate(id,await withSlip(id,patch))) toast("Dispatched 🚚","ok"); else b.disabled=false;
   }
   if(act==="undispatch" && confirm("Move this order back to Courier Pending?")) poUpdate(id,{status:"courier_pending"});
+  if(act==="slip"){
+    const w=window.open("","_blank");   // opened now: a window opened after the await gets blocked
+    const { data, error } = await sb.storage.from("slips").createSignedUrl(o.slip_path,600);
+    if(error){ w?.close(); toast("Slip photo not found (removed after "+SLIP_DAYS+" days?)","bad",5000); }
+    else if(w) w.location=data.signedUrl;
+  }
   if(act==="copy"){
     if(await copyText(courierText(o))){ b.textContent="✓ Copied"; setTimeout(()=>{ b.textContent="📋 Copy details"; },1500); }
     else toast("Could not copy — please copy manually","bad");

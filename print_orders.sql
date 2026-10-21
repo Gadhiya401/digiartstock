@@ -52,6 +52,9 @@ create table if not exists print_orders (
   constraint cancel_needs_reason check (status <> 'cancelled' or coalesce(trim(cancel_reason),'') <> '')
 );
 
+-- photo of the courier slip, saved by the app when a parcel is scanned (file in the "slips" bucket)
+alter table print_orders add column if not exists slip_path text;
+
 create index if not exists print_orders_status_idx on print_orders (status, created_at);
 create index if not exists print_orders_mobile_idx on print_orders (mobile);
 create index if not exists print_orders_branch_idx on print_orders (branch_id);
@@ -76,6 +79,7 @@ begin
     new.printed_at := null; new.printed_by := null;
     new.courier_partner := null; new.courier_other := null; new.tracking_id := null;
     new.dispatched_at := null; new.dispatched_by := null; new.cancel_reason := null;
+    new.slip_path := null;
     return new;
   end if;
 
@@ -172,6 +176,40 @@ create policy "update print_orders" on print_orders for update to authenticated
 drop policy if exists "read print_order_log" on print_order_log;
 create policy "read print_order_log" on print_order_log for select to authenticated
   using (exists (select 1 from print_orders o where o.id = order_id));
+
+-- ---------- Slip photos (storage bucket "slips") ----------
+-- private bucket, small images only; files sit in one folder per day (2026-10-21/...)
+-- and the app deletes day-folders older than 15 days, so the free 1 GB is never close
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('slips', 'slips', false, 1048576, array['image/webp','image/jpeg'])
+on conflict (id) do update set public = false, file_size_limit = 1048576,
+  allowed_mime_types = array['image/webp','image/jpeg'];
+
+drop policy if exists "slips read" on storage.objects;
+create policy "slips read" on storage.objects for select to authenticated using (bucket_id = 'slips');
+drop policy if exists "slips upload" on storage.objects;
+create policy "slips upload" on storage.objects for insert to authenticated with check (bucket_id = 'slips');
+drop policy if exists "slips delete" on storage.objects;
+create policy "slips delete" on storage.objects for delete to authenticated using (bucket_id = 'slips');
+
+-- ---------- Scanned parcels whose order was not found ("Mobile not found" list) ----------
+-- the app saves the tracking ID + slip photo here; "Match order" later links it to the order
+create table if not exists courier_scans (
+  id                uuid primary key default gen_random_uuid(),
+  created_at        timestamptz not null default now(),
+  created_by        uuid references auth.users default auth.uid(),
+  tracking_id       text not null,
+  courier_partner   text not null check (courier_partner in ('anjani','delhivery','post','other')),
+  slip_path         text,
+  reason            text,
+  resolved_order_id uuid references print_orders,
+  resolved_at       timestamptz
+);
+create index if not exists courier_scans_open_idx on courier_scans (created_at) where resolved_order_id is null;
+alter table courier_scans enable row level security;
+-- no branch is known for these yet, so every login sees them (anyone may be the one to match it)
+drop policy if exists "courier_scans all" on courier_scans;
+create policy "courier_scans all" on courier_scans for all to authenticated using (true) with check (true);
 
 -- ---------- Realtime (new entries appear without refresh) ----------
 do $$ begin

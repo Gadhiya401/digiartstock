@@ -88,3 +88,16 @@ on conflict (id) do update set role = 'packing', branch_id = null;
 
 These rules are enforced in the database (trigger `print_orders_guard`), not only in the app.
 Every create / status change / edit is recorded in `print_order_log`.
+
+**Scan parcel:** in Courier Pending, **📷 Scan parcel** reads the courier barcode (tracking ID) and the
+customer's mobile on the slip, finds the order and dispatches it. A small copy of the slip photo
+(~100 KB) is saved in the private storage bucket `slips` and shown as **🖼 Slip photo** on the
+dispatched order. Photos older than 15 days are deleted automatically by the app.
+
+**🖼 Courier Photos** (Orders tab) lists the slip photos by dispatch date — branch logins see only
+their own branch. **📤 Send** opens the phone's share sheet (WhatsApp) with the photo as a JPG and
+the dispatch message; on PC it downloads the photo. **⬇ Download all** saves the whole day.
+
+When a scan cannot find its order (mobile not read, two orders, tracking ID already used), the
+tracking ID + photo are saved in `courier_scans` and listed date-wise in Courier Photos under
+**⚠ Mobile not found** — tap **Match order**, then **✅ Use** on the right order.
