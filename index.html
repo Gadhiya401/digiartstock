@@ -1473,7 +1473,11 @@ async function runSlipPhotos(){
   const img=(u,alt)=>u ? `<img src="${esc(u)}" loading="lazy" alt="${esc(alt)}" data-ph="open">`
     : `<div class="muted" style="padding:2rem .5rem;text-align:center;">Photo removed</div>`;
   const days=Object.keys(otherDays).sort().reverse();
+  const nUrl=rows.filter(o=>po.photoRows[o.id].url).length;
   body.innerHTML=`
+    ${rows.length ? `<div class="card" style="padding:.6rem .7rem;">
+      <b>${rows.length} photo${rows.length===1?"":"s"} · ${ddmmyyyy(d)}</b>
+      ${nUrl ? `<button class="btn" id="poPhAll" style="margin-top:.5rem;">⬇ Download all ${nUrl} photo${nUrl===1?"":"s"} (one ZIP file)</button>` : ""}</div>` : ""}
     ${days.length ? `<div class="card" style="padding:.6rem .7rem;font-size:.85rem;">⚠ Mobile not found on other days:
       <div class="chips" style="margin-top:.4rem;">${days.map(k=>`<button data-day="${k}">${ddmmyyyy(k)} (${otherDays[k]})</button>`).join("")}</div></div>` : ""}
     ${scans.length ? `<div class="card" style="padding:.6rem .7rem;border:2px solid #f59e0b;">
@@ -1489,10 +1493,7 @@ async function runSlipPhotos(){
           ${used ? `<span style="color:var(--danger);">Already on order ${fmtMobile(used.mobile)}</span>` : ""}</div>
         <div class="acts"><button class="btn sm" data-ph="match">Match order</button><button class="btn sec sm" data-ph="del" title="Delete">🗑</button></div>
       </div>`; }).join("")}</div>` : ""}
-    ${rows.length ? `<div class="card" style="padding:.6rem .7rem;display:flex;align-items:center;gap:.5rem;">
-      <b style="flex:1;">${rows.length} photo${rows.length===1?"":"s"} · ${ddmmyyyy(d)}</b>
-      <button class="btn sec sm" id="poPhAll">⬇ Download all</button></div>
-    <div class="phgrid">${rows.map(o=>{ const u=po.photoRows[o.id].url; return `<div class="ph" data-id="${o.id}">
+    ${rows.length ? `<div class="phgrid">${rows.map(o=>{ const u=po.photoRows[o.id].url; return `<div class="ph" data-id="${o.id}">
       ${img(u,"Slip "+o.tracking_id)}
       <div class="info"><b>📞 ${fmtMobile(o.mobile)}</b>${branchPill(o.branch_id)}
         <span>${esc(partnerName(o))} · ${esc(o.tracking_id)}</span><span class="muted">${esc(o.details)}</span></div>
@@ -1509,6 +1510,21 @@ async function slipFile(id){
   c.getContext("2d").drawImage(img,0,0);
   const jpg=await new Promise(ok=>c.toBlob(ok,"image/jpeg",.85));
   return po.photoFiles[id]=new File([jpg],`courier-${o.mobile}-${o.tracking_id}.jpg`,{ type:"image/jpeg" });
+}
+// the day's photos as one ZIP: phones block a burst of separate downloads after the first one
+const JSZIP_SRC="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+async function slipZip(progress){
+  await loadScript(JSZIP_SRC);
+  const zip=new JSZip(), ids=Object.keys(po.photoRows).filter(id=>po.photoRows[id].url);
+  let n=0, failed=0;
+  for(const id of ids){
+    progress?.(`${++n}/${ids.length}`);
+    try { const f=await slipFile(id); zip.file(f.name,f); } catch { failed++; }
+  }
+  if(failed) toast(`${failed} photo${failed===1?"":"s"} could not be added`,"bad",5000);
+  // JPGs are already compressed: store them as they are (fast, same size)
+  const blob=await zip.generateAsync({ type:"blob", compression:"STORE" });
+  return new File([blob],`courier-photos-${ddmmyyyy($("#poPhDate").value)}.zip`,{ type:"application/zip" });
 }
 function saveFile(file){
   const a=document.createElement("a"); a.href=URL.createObjectURL(file); a.download=file.name; a.click();
@@ -1527,13 +1543,11 @@ $("#poPhBody").addEventListener("change", async e=>{
 });
 $("#poPhBody").addEventListener("click", async e=>{
   if(e.target.id==="poPhAll"){
-    const ids=Object.keys(po.photoRows).filter(id=>po.photoRows[id].url);
-    e.target.disabled=true;
-    for(const id of ids){
-      try { saveFile(await slipFile(id)); } catch {}
-      await new Promise(r=>setTimeout(r,400));   // browsers drop downloads fired all at once
-    }
-    e.target.disabled=false;
+    const btn=e.target, label=btn.textContent;
+    btn.disabled=true;
+    try { saveFile(await slipZip(n=>{ btn.textContent=`Preparing ${n}…`; })); }
+    catch(err){ toast("Could not make the ZIP: "+err.message,"bad",5000); }
+    btn.disabled=false; btn.textContent=label;
     return;
   }
   const day=e.target.closest("[data-day]");
