@@ -224,6 +224,7 @@
   <header>
     <span class="brand">📦 DigiArt Stock Management</span>
     <span style="display:flex;align-items:center;gap:.5rem;">
+      <button class="lo hide" id="installBtn" style="color:var(--primary);border-color:var(--primary);font-weight:600;">📲 Install app</button>
       <span class="chip" id="branchChip">—</span>
       <button class="lo" id="logoutBtn">Logout</button>
     </span>
@@ -463,6 +464,24 @@ $("#liBtn").onclick = async ()=>{
   await loadIdentity(data.user);
 };
 $("#logoutBtn").onclick = async ()=>{ await sb.auth.signOut(); location.reload(); };
+
+/* ---------------- Install as an app (home screen) ---------------- */
+// Android / PC Chrome & Edge offer the install through this event; iPhone Safari has no such
+// event, so there the button explains Share -> Add to Home Screen. Hidden once installed.
+const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+let installEvt=null;
+if(!standalone() && isIOS) $("#installBtn").classList.remove("hide");
+addEventListener("beforeinstallprompt", e=>{ e.preventDefault(); installEvt=e; $("#installBtn").classList.remove("hide"); });
+addEventListener("appinstalled", ()=>{ installEvt=null; $("#installBtn").classList.add("hide"); toast("Digiart Stock Checker installed ✓","ok"); });
+$("#installBtn").onclick = async ()=>{
+  if(installEvt){ installEvt.prompt(); await installEvt.userChoice; installEvt=null; $("#installBtn").classList.add("hide"); return; }
+  toast(isIOS ? "Tap Share ⬆ at the bottom of Safari, then \"Add to Home Screen\""
+    : "Open the browser menu ⋮ and choose \"Install app\" or \"Add to Home screen\"","info",8000);
+};
+// service worker: only so Chrome offers "Install app"; it caches nothing, every load is fresh
+if("serviceWorker" in navigator && location.protocol.startsWith("http"))
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
 
 function show(which){
   $("#bootView").classList.toggle("hide", which!=="boot");
