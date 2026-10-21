@@ -205,11 +205,15 @@ create table if not exists courier_scans (
   resolved_order_id uuid references print_orders,
   resolved_at       timestamptz
 );
+-- sending branch, read off the slip's "From" part (or the scanning login's branch); null = not known yet
+alter table courier_scans add column if not exists branch_id uuid references branches;
 create index if not exists courier_scans_open_idx on courier_scans (created_at) where resolved_order_id is null;
 alter table courier_scans enable row level security;
--- no branch is known for these yet, so every login sees them (anyone may be the one to match it)
+-- branch staff see their branch's scans and the ones with no branch yet; printing / packing see all
 drop policy if exists "courier_scans all" on courier_scans;
-create policy "courier_scans all" on courier_scans for all to authenticated using (true) with check (true);
+create policy "courier_scans all" on courier_scans for all to authenticated
+  using (my_role() in ('printing','packing') or branch_id is null or branch_id = my_branch())
+  with check (true);
 
 -- ---------- Realtime (new entries appear without refresh) ----------
 do $$ begin
