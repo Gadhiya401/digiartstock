@@ -375,7 +375,7 @@
       <div id="poPhotos" class="hide">
         <div class="card" style="padding:.7rem;">
           <div class="grid2">
-            <div><label>Dispatch date</label><input id="poPhDate" type="date" /></div>
+            <div><label>Photo date (day taken)</label><input id="poPhDate" type="date" /></div>
             <div id="poPhBranchWrap"><label>Branch</label><select id="poPhBranch"><option value="all">All</option></select></div>
           </div>
           <div class="muted" style="font-size:.8rem;margin-top:.4rem;">Courier slip photos are kept for 15 days. Send them to customers from here.</div>
@@ -977,7 +977,7 @@ function downloadCSV(name,rows){
 const PO_PARTNERS = { anjani:"Shree Anjani Courier Services (P) Ltd.", delhivery:"Delhivery", post:"Post", other:"Other" };
 const PO_STATUS = { pending:"Pending", courier_pending:"Courier Pending", dispatched:"Dispatched", cancelled:"Cancelled" };
 const DAY_MS = 864e5;
-const po = { orders:[], loaded:false, tab:null, editId:null, names:{}, searchTimer:null, scanId:null, scanning:null, pick:null, slips:{}, photoRows:{}, photoFiles:{}, unmatched:[], scanUrls:{}, photoScans:[] };
+const po = { orders:[], loaded:false, tab:null, editId:null, names:{}, searchTimer:null, scanId:null, scanning:null, pick:null, slips:{}, photoRows:{}, photoFiles:{}, unmatched:[], scanUrls:{}, photoScans:[], photoWaiting:[], photoDups:[] };
 
 const branchName = id => state.branches.find(b=>b.id===id)?.name || "—";
 const branchPill = id => `<span class="pill ${branchCode(id)==="UVINVITE"?"br-u":"br-d"}">${esc(branchName(id))}</span>`;
@@ -1483,26 +1483,43 @@ async function runSlipPhotos(){
   if(bsel.options.length===1) state.branches.forEach(b=>bsel.add(new Option(b.name,b.id)));
   $("#poPhBranchWrap").classList.toggle("hide",role()==="branch");
   body.innerHTML='<div class="loading"><span class="spin"></span> Loading…</div>';
-  const d=dIn.value;
+  const d=dIn.value, day0=`${d}T00:00:00+05:30`, day1=`${d}T23:59:59.999+05:30`;   // IST day
+  const dayOf=s=>isoLocal(new Date(s.created_at));
+  // branch filter (printing/packing): that branch's photos plus scans nobody has given a branch yet
+  const mine=s=>role()==="branch" || bsel.value==="all" || !s.branch_id || s.branch_id===bsel.value;
+  // The day is the day the photo was TAKEN. Photos saved straight on an order (live / card scan)
+  // were taken at dispatch; Photo mode / Mobile not found photos (courier_scans) when the row was
+  // made - they may be read or matched (= dispatched) a day later.
   let q=sb.from("print_orders").select("*").eq("status","dispatched").not("slip_path","is",null)
-    .gte("dispatched_at",`${d}T00:00:00+05:30`).lte("dispatched_at",`${d}T23:59:59.999+05:30`)   // IST day
-    .order("dispatched_at");
+    .gte("dispatched_at",day0).lte("dispatched_at",day1).order("dispatched_at");
   if(bsel.value!=="all" && role()!=="branch") q=q.eq("branch_id",bsel.value);
-  // photos taken but not read yet (app closed before reading): shown so they are not lost from view
-  const waitQ=sb.from("courier_scans").select("id,created_by,created_at,slip_path").in("state",["queued","processing"])
-    .gte("created_at",`${d}T00:00:00+05:30`).lte("created_at",`${d}T23:59:59.999+05:30`);
-  const [{ data, error }, , { data:waitRows }] = await Promise.all([q, loadUnmatched(), waitQ]);
-  const waiting=waitRows||[];
+  const scQ=sb.from("courier_scans").select("*").gte("created_at",day0).lte("created_at",day1).order("created_at");
+  const [{ data, error }, , { data:scDay }] = await Promise.all([q, loadUnmatched(), scQ]);
   if(run!==po.photosRun) return;
   if(error){ body.innerHTML=`<div class="card err">${esc(error.message)}</div>`; return; }
-  const rows=data||[];
+  const dayScans=(scDay||[]).filter(mine);
+  // photos taken but not read yet (app closed before reading): shown so they are not lost from view
+  const waiting=dayScans.filter(s=>s.state==="queued" || s.state==="processing");
+  const resolved=dayScans.filter(s=>s.resolved_order_id);
+  // orders this day's photos went to (dispatched maybe on a later day)
+  const extraIds=[...new Set(resolved.map(s=>s.resolved_order_id))].filter(id=>!(data||[]).some(o=>o.id===id));
+  // orders dispatched this day whose photo was taken on another day belong to that day
+  const dPaths=(data||[]).map(o=>o.slip_path);
+  const [{ data:more }, { data:pathScans }] = await Promise.all([
+    extraIds.length ? sb.from("print_orders").select("*").in("id",extraIds) : { data:[] },
+    dPaths.length ? sb.from("courier_scans").select("slip_path,created_at").in("slip_path",dPaths) : { data:[] }]);
+  if(run!==po.photosRun) return;
+  const takenElse=new Set((pathScans||[]).filter(s=>dayOf(s)!==d).map(s=>s.slip_path));
+  const byId=Object.fromEntries([...(data||[]),...(more||[])].map(o=>[o.id,o]));
+  const rows=[...(data||[]).filter(o=>!takenElse.has(o.slip_path)),
+    ...(more||[]).filter(o=>o.status==="dispatched" && o.slip_path && mine(o)
+      && resolved.some(s=>s.resolved_order_id===o.id && s.slip_path===o.slip_path))];
+  // the same parcel photographed again: its own photo, shown as a duplicate of the dispatched order
+  const dups=resolved.filter(s=>s.slip_path && byId[s.resolved_order_id] && byId[s.resolved_order_id].slip_path!==s.slip_path);
   // scans whose order was not found: this day's cards, plus a jump to other days that have some
-  const dayOf=s=>isoLocal(new Date(s.created_at));
-  // branch filter (printing/packing): that branch's scans plus the ones nobody has given a branch yet
-  const mine=s=>role()==="branch" || bsel.value==="all" || !s.branch_id || s.branch_id===bsel.value;
   const scans=po.unmatched.filter(s=>mine(s) && dayOf(s)===d);
   const otherDays={}; po.unmatched.forEach(s=>{ if(mine(s) && dayOf(s)!==d) otherDays[dayOf(s)]=(otherDays[dayOf(s)]||0)+1; });
-  const paths=[...rows.map(o=>o.slip_path), ...[...scans,...waiting].map(s=>s.slip_path).filter(Boolean)];
+  const paths=[...rows.map(o=>o.slip_path), ...[...scans,...waiting,...dups].map(s=>s.slip_path).filter(Boolean)];
   const urls={};
   if(paths.length){
     const { data:signed } = await sb.storage.from("slips").createSignedUrls(paths,3600);
@@ -1510,16 +1527,16 @@ async function runSlipPhotos(){
     (signed||[]).forEach((x,i)=>{ if(x?.signedUrl) urls[paths[i]]=x.signedUrl; });
   }
   po.photoRows=Object.fromEntries(rows.map(o=>[o.id,{ o, url:urls[o.slip_path]||"" }]));
-  po.scanUrls=Object.fromEntries([...scans,...waiting].map(s=>[s.id,urls[s.slip_path]||""]));
+  po.scanUrls=Object.fromEntries([...scans,...waiting,...dups].map(s=>[s.id,urls[s.slip_path]||""]));
   po.photoFiles={};
   const img=(u,alt)=>u ? `<img src="${esc(u)}" loading="lazy" alt="${esc(alt)}" data-ph="open">`
     : `<div class="muted" style="padding:2rem .5rem;text-align:center;">Photo removed</div>`;
   const days=Object.keys(otherDays).sort().reverse();
   // the day's count and the ZIP cover both: dispatched photos and "Mobile not found" ones
   // not read yet still counts and goes in the ZIP: the photo itself is already uploaded
-  po.photoScans=scans; po.photoWaiting=waiting;
-  const total=rows.length+scans.length+waiting.length;
-  const nUrl=rows.filter(o=>po.photoRows[o.id].url).length + [...scans,...waiting].filter(s=>po.scanUrls[s.id]).length;
+  po.photoScans=scans; po.photoWaiting=waiting; po.photoDups=dups.map(s=>({ ...s, order:byId[s.resolved_order_id] }));
+  const total=rows.length+scans.length+waiting.length+dups.length;
+  const nUrl=rows.filter(o=>po.photoRows[o.id].url).length + [...scans,...waiting,...dups].filter(s=>po.scanUrls[s.id]).length;
   const waitBy=[...new Set(waiting.map(w=>po.names[w.created_by]||"another login"))].join(", ");
   body.innerHTML=`
     ${waiting.length ? `<div class="card" style="padding:.6rem .7rem;border:2px solid var(--primary);">
@@ -1534,8 +1551,9 @@ async function runSlipPhotos(){
         <div class="info"><span class="muted">${dtIST(w.created_at).split(", ")[1]} · not read yet</span></div></div>`).join("")}</div></div>` : ""}
     ${total ? `<div class="card" style="padding:.6rem .7rem;">
       <b>${total} photo${total===1?"":"s"} · ${ddmmyyyy(d)}</b>
-      ${scans.length||waiting.length ? `<div class="muted" style="font-size:.82rem;">${[`${rows.length} dispatched`,
-        scans.length && `${scans.length} mobile not found`, waiting.length && `${waiting.length} not read yet`].filter(Boolean).join(" · ")}</div>` : ""}
+      ${scans.length||waiting.length||dups.length ? `<div class="muted" style="font-size:.82rem;">${[`${rows.length} dispatched`,
+        scans.length && `${scans.length} mobile not found`, waiting.length && `${waiting.length} not read yet`,
+        dups.length && `${dups.length} duplicate`].filter(Boolean).join(" · ")}</div>` : ""}
       ${nUrl ? `<button class="btn" id="poPhAll" style="margin-top:.5rem;">⬇ Download all ${nUrl} photo${nUrl===1?"":"s"} (one ZIP file)</button>` : ""}</div>` : ""}
     ${days.length ? `<div class="card" style="padding:.6rem .7rem;font-size:.85rem;">⚠ Mobile not found on other days:
       <div class="chips" style="margin-top:.4rem;">${days.map(k=>`<button data-day="${k}">${ddmmyyyy(k)} (${otherDays[k]})</button>`).join("")}</div></div>` : ""}
@@ -1558,7 +1576,11 @@ async function runSlipPhotos(){
         <span>${esc(partnerName(o))} · ${esc(o.tracking_id)}</span><span class="muted">${esc(o.details)}</span></div>
       ${u ? `<div class="acts"><button class="btn sm" data-ph="share">📤 Send</button><button class="btn sec sm" data-ph="dl" title="Download">⬇</button></div>` : ""}
     </div>`; }).join("")}</div>`
-    : scans.length||waiting.length ? "" : `<div class="card muted">No courier photos for ${ddmmyyyy(d)}</div>`}`;
+    : scans.length||waiting.length||dups.length ? "" : `<div class="card muted">No courier photos for ${ddmmyyyy(d)}</div>`}
+    ${dups.length ? `<div class="card" style="padding:.6rem .7rem;margin-top:.9rem;"><b>Duplicate photos · ${dups.length}</b>
+        <div class="muted" style="font-size:.8rem;">The same parcel was photographed again; the order was already dispatched.</div></div>
+      <div class="phgrid">${po.photoDups.map(s=>`<div class="ph" data-wait="${s.id}">${img(po.scanUrls[s.id],"Duplicate slip photo")}
+        <div class="info"><b>🚚 ${esc(s.tracking_id||"")}</b><span class="muted">${dtIST(s.created_at).split(", ")[1]} · same as 📞 ${fmtMobile(s.order.mobile)}</span></div></div>`).join("")}</div>` : ""}`;
 }
 // customers get a JPG named after their order (WhatsApp can turn a WebP into a sticker)
 async function slipFile(id){
@@ -1580,7 +1602,8 @@ async function slipZip(progress){
   const zip=new JSZip(), ids=Object.keys(po.photoRows).filter(id=>po.photoRows[id].url);
   const scans=(po.photoScans||[]).filter(s=>po.scanUrls[s.id]);
   const waits=(po.photoWaiting||[]).filter(s=>po.scanUrls[s.id]);
-  const all=ids.length+scans.length+waits.length;
+  const dups=(po.photoDups||[]).filter(s=>po.scanUrls[s.id]);
+  const all=ids.length+scans.length+waits.length+dups.length;
   let n=0, failed=0;
   for(const id of ids){
     progress?.(`${++n}/${all}`);
@@ -1597,6 +1620,11 @@ async function slipZip(progress){
     progress?.(`${++n}/${all}`);
     const time=dtIST(s.created_at).split(", ")[1].replace(/[: ]/g,"");
     try { zip.file(`not-read-yet/${time}-${s.id.slice(0,4)}.jpg`, await jpgFile(po.scanUrls[s.id],"x.jpg")); }
+    catch { failed++; }
+  }
+  for(const s of dups){
+    progress?.(`${++n}/${all}`);
+    try { zip.file(`duplicates/courier-${s.order.mobile}-${s.tracking_id}-${s.id.slice(0,4)}.jpg`, await jpgFile(po.scanUrls[s.id],"x.jpg")); }
     catch { failed++; }
   }
   if(failed) toast(`${failed} photo${failed===1?"":"s"} could not be added`,"bad",5000);
