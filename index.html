@@ -1488,7 +1488,11 @@ async function runSlipPhotos(){
     .gte("dispatched_at",`${d}T00:00:00+05:30`).lte("dispatched_at",`${d}T23:59:59.999+05:30`)   // IST day
     .order("dispatched_at");
   if(bsel.value!=="all" && role()!=="branch") q=q.eq("branch_id",bsel.value);
-  const [{ data, error }] = await Promise.all([q, loadUnmatched()]);
+  // photos taken but not read yet (app closed before reading): shown so they are not lost from view
+  const waitQ=sb.from("courier_scans").select("id,created_by,created_at,slip_path").in("state",["queued","processing"])
+    .gte("created_at",`${d}T00:00:00+05:30`).lte("created_at",`${d}T23:59:59.999+05:30`);
+  const [{ data, error }, , { data:waitRows }] = await Promise.all([q, loadUnmatched(), waitQ]);
+  const waiting=waitRows||[];
   if(run!==po.photosRun) return;
   if(error){ body.innerHTML=`<div class="card err">${esc(error.message)}</div>`; return; }
   const rows=data||[];
@@ -1498,7 +1502,7 @@ async function runSlipPhotos(){
   const mine=s=>role()==="branch" || bsel.value==="all" || !s.branch_id || s.branch_id===bsel.value;
   const scans=po.unmatched.filter(s=>mine(s) && dayOf(s)===d);
   const otherDays={}; po.unmatched.forEach(s=>{ if(mine(s) && dayOf(s)!==d) otherDays[dayOf(s)]=(otherDays[dayOf(s)]||0)+1; });
-  const paths=[...rows.map(o=>o.slip_path), ...scans.map(s=>s.slip_path).filter(Boolean)];
+  const paths=[...rows.map(o=>o.slip_path), ...[...scans,...waiting].map(s=>s.slip_path).filter(Boolean)];
   const urls={};
   if(paths.length){
     const { data:signed } = await sb.storage.from("slips").createSignedUrls(paths,3600);
@@ -1506,19 +1510,32 @@ async function runSlipPhotos(){
     (signed||[]).forEach((x,i)=>{ if(x?.signedUrl) urls[paths[i]]=x.signedUrl; });
   }
   po.photoRows=Object.fromEntries(rows.map(o=>[o.id,{ o, url:urls[o.slip_path]||"" }]));
-  po.scanUrls=Object.fromEntries(scans.map(s=>[s.id,urls[s.slip_path]||""]));
+  po.scanUrls=Object.fromEntries([...scans,...waiting].map(s=>[s.id,urls[s.slip_path]||""]));
   po.photoFiles={};
   const img=(u,alt)=>u ? `<img src="${esc(u)}" loading="lazy" alt="${esc(alt)}" data-ph="open">`
     : `<div class="muted" style="padding:2rem .5rem;text-align:center;">Photo removed</div>`;
   const days=Object.keys(otherDays).sort().reverse();
   // the day's count and the ZIP cover both: dispatched photos and "Mobile not found" ones
-  po.photoScans=scans;
-  const total=rows.length+scans.length;
-  const nUrl=rows.filter(o=>po.photoRows[o.id].url).length + scans.filter(s=>po.scanUrls[s.id]).length;
+  // not read yet still counts and goes in the ZIP: the photo itself is already uploaded
+  po.photoScans=scans; po.photoWaiting=waiting;
+  const total=rows.length+scans.length+waiting.length;
+  const nUrl=rows.filter(o=>po.photoRows[o.id].url).length + [...scans,...waiting].filter(s=>po.scanUrls[s.id]).length;
+  const waitBy=[...new Set(waiting.map(w=>po.names[w.created_by]||"another login"))].join(", ");
   body.innerHTML=`
+    ${waiting.length ? `<div class="card" style="padding:.6rem .7rem;border:2px solid var(--primary);">
+      <b>⏳ ${waiting.length} photo${waiting.length===1?"":"s"} waiting to be read</b>
+      <div class="muted" style="font-size:.82rem;">Taken by ${esc(waitBy)}. They are read when that login opens the app again,
+        or while a Printing / Packing login has the app open.</div>
+      ${helpsQueue() || waiting.some(w=>w.created_by===state.user.id)
+        ? `<button class="btn sec sm" id="poReadNow" style="margin-top:.4rem;">Read them now</button>` : ""}
+      <div class="phgrid" style="margin-top:.6rem;">${waiting.map(w=>`<div class="ph" data-wait="${w.id}">${po.scanUrls[w.id]
+        ? `<img src="${esc(po.scanUrls[w.id])}" loading="lazy" alt="Slip photo, not read yet" data-ph="open">`
+        : `<div class="muted" style="padding:2rem .5rem;text-align:center;">Photo removed</div>`}
+        <div class="info"><span class="muted">${dtIST(w.created_at).split(", ")[1]} · not read yet</span></div></div>`).join("")}</div></div>` : ""}
     ${total ? `<div class="card" style="padding:.6rem .7rem;">
       <b>${total} photo${total===1?"":"s"} · ${ddmmyyyy(d)}</b>
-      ${scans.length ? `<div class="muted" style="font-size:.82rem;">${rows.length} dispatched · ${scans.length} mobile not found</div>` : ""}
+      ${scans.length||waiting.length ? `<div class="muted" style="font-size:.82rem;">${[`${rows.length} dispatched`,
+        scans.length && `${scans.length} mobile not found`, waiting.length && `${waiting.length} not read yet`].filter(Boolean).join(" · ")}</div>` : ""}
       ${nUrl ? `<button class="btn" id="poPhAll" style="margin-top:.5rem;">⬇ Download all ${nUrl} photo${nUrl===1?"":"s"} (one ZIP file)</button>` : ""}</div>` : ""}
     ${days.length ? `<div class="card" style="padding:.6rem .7rem;font-size:.85rem;">⚠ Mobile not found on other days:
       <div class="chips" style="margin-top:.4rem;">${days.map(k=>`<button data-day="${k}">${ddmmyyyy(k)} (${otherDays[k]})</button>`).join("")}</div></div>` : ""}
@@ -1541,7 +1558,7 @@ async function runSlipPhotos(){
         <span>${esc(partnerName(o))} · ${esc(o.tracking_id)}</span><span class="muted">${esc(o.details)}</span></div>
       ${u ? `<div class="acts"><button class="btn sm" data-ph="share">📤 Send</button><button class="btn sec sm" data-ph="dl" title="Download">⬇</button></div>` : ""}
     </div>`; }).join("")}</div>`
-    : scans.length ? "" : `<div class="card muted">No courier photos for ${ddmmyyyy(d)}</div>`}`;
+    : scans.length||waiting.length ? "" : `<div class="card muted">No courier photos for ${ddmmyyyy(d)}</div>`}`;
 }
 // customers get a JPG named after their order (WhatsApp can turn a WebP into a sticker)
 async function slipFile(id){
@@ -1562,7 +1579,8 @@ async function slipZip(progress){
   await loadScript(JSZIP_SRC);
   const zip=new JSZip(), ids=Object.keys(po.photoRows).filter(id=>po.photoRows[id].url);
   const scans=(po.photoScans||[]).filter(s=>po.scanUrls[s.id]);
-  const all=ids.length+scans.length;
+  const waits=(po.photoWaiting||[]).filter(s=>po.scanUrls[s.id]);
+  const all=ids.length+scans.length+waits.length;
   let n=0, failed=0;
   for(const id of ids){
     progress?.(`${++n}/${all}`);
@@ -1573,6 +1591,12 @@ async function slipZip(progress){
     progress?.(`${++n}/${all}`);
     const time=dtIST(s.created_at).split(", ")[1].replace(/[: ]/g,"");
     try { zip.file(`mobile-not-found/${s.tracking_id||"no-barcode"}-${time}-${s.id.slice(0,4)}.jpg`, await jpgFile(po.scanUrls[s.id],"x.jpg")); }
+    catch { failed++; }
+  }
+  for(const s of waits){
+    progress?.(`${++n}/${all}`);
+    const time=dtIST(s.created_at).split(", ")[1].replace(/[: ]/g,"");
+    try { zip.file(`not-read-yet/${time}-${s.id.slice(0,4)}.jpg`, await jpgFile(po.scanUrls[s.id],"x.jpg")); }
     catch { failed++; }
   }
   if(failed) toast(`${failed} photo${failed===1?"":"s"} could not be added`,"bad",5000);
@@ -1596,6 +1620,14 @@ $("#poPhBody").addEventListener("change", async e=>{
   toast(branch_id ? `Branch: ${branchName(branch_id)}` : "Branch cleared","ok");
 });
 $("#poPhBody").addEventListener("click", async e=>{
+  if(e.target.id==="poReadNow"){
+    e.target.disabled=true; e.target.textContent="Reading… (this can take a while)";
+    ocrReady().catch(()=>{});
+    await runQueue();
+    while(queue.running) await new Promise(r=>setTimeout(r,500));   // started earlier by the app itself
+    runSlipPhotos();
+    return;
+  }
   if(e.target.id==="poPhAll"){
     const btn=e.target, label=btn.textContent;
     btn.disabled=true;
@@ -1607,6 +1639,8 @@ $("#poPhBody").addEventListener("click", async e=>{
   const day=e.target.closest("[data-day]");
   if(day){ $("#poPhDate").value=day.dataset.day; runSlipPhotos(); return; }
   const b=e.target.closest("[data-ph]"); if(!b) return;
+  const wt=b.closest("[data-wait]");
+  if(wt){ if(po.scanUrls[wt.dataset.wait]) window.open(po.scanUrls[wt.dataset.wait],"_blank"); return; }
   const sc=b.closest("[data-scan]");
   if(sc){   // a "Mobile not found" card
     const s=po.unmatched.find(x=>x.id===sc.dataset.scan); if(!s) return;
@@ -1738,12 +1772,17 @@ async function runQueue(){
 }
 // next queued photo of this login (or one left "processing" by a closed app), taken so that a
 // second open tab / device does not read it too
+// Printing / packing (they see every order) also read photos other logins left unread, so a
+// phone closed mid-way does not keep them hidden; a fresh one is left to its own phone a while.
+const helpsQueue = () => ["printing","packing"].includes(role());
 async function claimScan(){
-  const { data, error } = await sb.from("courier_scans").select("*").eq("created_by",state.user.id)
-    .in("state",["queued","processing"]).order("created_at");
+  let q0=sb.from("courier_scans").select("*").in("state",["queued","processing"]).order("created_at");
+  if(!helpsQueue()) q0=q0.eq("created_by",state.user.id);
+  const { data, error } = await q0;
   if(error) return null;
-  const stale=Date.now()-3*60e3;
-  const todo=(data||[]).filter(s=>s.state==="queued" || new Date(s.claimed_at||0)<stale);
+  const stale=Date.now()-3*60e3, mine=s=>s.created_by===state.user.id;
+  const todo=(data||[]).filter(s=>(mine(s) || new Date(s.created_at)<Date.now()-2*60e3)
+    && (s.state==="queued" || new Date(s.claimed_at||0)<stale));
   queue.waiting=Math.max(queue.waiting,todo.length);
   for(const s of todo){
     let q=sb.from("courier_scans").update({ state:"processing", claimed_at:new Date().toISOString() }).eq("id",s.id).eq("state",s.state);
